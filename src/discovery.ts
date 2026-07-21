@@ -1,16 +1,11 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { defaultAgentDefinitions } from "./builtins.ts";
 import type { AgentDefinition, AgentSource, BuiltinTool, ThinkingLevel } from "./types.ts";
 import { BUILTIN_TOOLS, THINKING_LEVELS } from "./types.ts";
 
 const LEGACY = new Set(["agent", "scope", "color", "temperature", "permissions"]);
-const defaults: AgentDefinition[] = [
-  { name: "general-purpose", displayName: "General-purpose", description: "A capable general coding and research agent.", tools: [...BUILTIN_TOOLS], enabled: true, prompt: "Be concise and solve the assigned task. Inspect relevant files before acting.", source: "default", legacyFields: [] },
-  { name: "Explore", displayName: "Explore", description: "Fast, read-only codebase reconnaissance.", tools: ["read", "grep", "find", "ls"], enabled: true, prompt: "Explore the repository without changing files. Return precise findings and paths.", source: "default", legacyFields: [] },
-  { name: "Plan", displayName: "Plan", description: "Produces an actionable implementation plan.", tools: ["read", "grep", "find", "ls"], enabled: true, prompt: "Inspect the repository and produce a focused, ordered plan. Do not edit files.", source: "default", legacyFields: [] },
-  { name: "implementer", displayName: "Implementer", description: "Implements code and tests with focused verification.", tools: [...BUILTIN_TOOLS], enabled: true, prompt: "Implement code and tests. Inspect before editing, make focused changes, run relevant checks, and report changed files and tests.", source: "default", legacyFields: [] },
-];
 const key = (name: string) => name.toLocaleLowerCase();
 function nearestAgents(cwd: string): string | undefined {
   let current = path.resolve(cwd);
@@ -63,10 +58,10 @@ export function discoverAgents(cwd: string, includeProject: boolean, warned = ne
     if (previous && previous.name !== agent.name) warnOnce(warnings, warned, `Case-colliding agent definitions '${previous.name}' and '${agent.name}'; precedence is deterministic by source and file order.`);
     merged.set(normalized, agent);
   };
-  for (const agent of defaults) add(agent);
+  for (const agent of defaultAgentDefinitions()) add(agent);
   for (const agent of list(path.join(getAgentDir(), "agents"), "global", false, warnings, warned)) add(agent);
   const projectDir = nearestAgents(cwd);
   if (includeProject && projectDir) for (const agent of list(projectDir, "project", true, warnings, warned)) add(agent);
   return { agents: [...merged.values()], projectDir, warnings };
 }
-export function defaultAgents(): AgentDefinition[] { return defaults.map((a) => ({ ...a, tools: [...a.tools] })); }
+export function defaultAgents(): AgentDefinition[] { return defaultAgentDefinitions(); }

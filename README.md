@@ -44,6 +44,12 @@ Ask Pi to use an agent, or call the tools directly:
 
 Then call `get_subagent_result` with the returned `agent_id` (optionally `wait` and `verbose`). Use `steer_subagent` with `agent_id` and `message` to add an instruction. `inherit_context` is opt-in. When enabled, Pi copies a defensive snapshot of the parent message context into the child. Mutable parent state is never shared.
 
+### Model-driven dispatch
+
+`Agent` is a model-driven tool: its prompt metadata asks the parent model to choose a built-in definition proactively, rather than selecting or launching one through extension hooks. Use `Explore` for broad or read-only repository exploration, `Plan` for planning, `implementer` for focused coding/testing, and `general-purpose` otherwise. The model should avoid delegating trivial work, and should give each meaningful delegation a focused prompt.
+
+Independent, meaningful workstreams can be delegated with separate `run_in_background: true` calls and collected with `get_subagent_result`; dependent work should remain sequential. The extension does not auto-launch agents from user input or `before_agent_start`/other input hooks.
+
 Run `/agents` to manage:
 
 - Active and recent runs. View, steer, or stop them.

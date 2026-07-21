@@ -3,8 +3,11 @@ import { dirname, join } from "node:path";
 import { Container, type SelectItem, SelectList, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
 import { CONFIG_DIR_NAME, DynamicBorder, type ExtensionAPI, type ExtensionContext, getAgentDir, getSettingsListTheme, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { SubagentManager, agentSchema, resultSchema, steerSchema } from "./manager.ts";
+import { AGENT_TOOL_DESCRIPTION, AGENT_TOOL_PROMPT_GUIDELINES, AGENT_TOOL_PROMPT_SNIPPET } from "./agent-tool-metadata.ts";
 import { agentResultViewModel, statusColorRole, statusIcon, SubagentNotificationComponent, ThemedLines, type ThemedLine } from "./rendering.ts";
-import type { AgentRequest, RunResult } from "./types.ts";
+import { BUILTIN_TOOLS, type AgentRequest, type RunResult } from "./types.ts";
+
+export { AGENT_TOOL_DESCRIPTION, AGENT_TOOL_PROMPT_GUIDELINES, AGENT_TOOL_PROMPT_SNIPPET } from "./agent-tool-metadata.ts";
 
 function asError(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function outputText(result: RunResult, verbose = false): string {
@@ -87,7 +90,7 @@ async function selectDetailed(ctx: ExtensionContext, title: string, choices: Det
   });
 }
 
-const AGENT_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+const AGENT_TOOLS = BUILTIN_TOOLS;
 
 async function selectAgentTools(ctx: ExtensionContext): Promise<string[] | undefined> {
   const selected = new Set<string>(AGENT_TOOLS);
@@ -184,7 +187,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   pi.on("session_shutdown", async () => { manager?.cleanup(); manager = undefined; });
 
   pi.registerTool({
-    name: "Agent", label: "Agent", description: "Run an isolated in-process Pi subagent. Background runs return an id; use get_subagent_result to wait.", parameters: agentSchema,
+    name: "Agent", label: "Agent", description: AGENT_TOOL_DESCRIPTION, promptSnippet: AGENT_TOOL_PROMPT_SNIPPET, promptGuidelines: AGENT_TOOL_PROMPT_GUIDELINES, parameters: agentSchema,
     async execute(_id, params, _signal, onUpdate) {
       const active = requireManager(manager);
       try {
