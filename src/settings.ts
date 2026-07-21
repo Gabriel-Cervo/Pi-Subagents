@@ -4,7 +4,7 @@ import path from "node:path";
 import { atomicWrite } from "./util.ts";
 import type { SessionOverrides, Settings } from "./types.ts";
 
-export const DEFAULT_SETTINGS: Settings = { version: 1, maxConcurrent: 4, joinMode: "smart", groupTimeoutMs: 30000, allowCallerModelOverride: false, defaultMaxTurns: 12, graceTurns: 2, agentModels: {} };
+export const DEFAULT_SETTINGS: Settings = { version: 1, maxConcurrent: 4, joinMode: "smart", groupTimeoutMs: 30000, allowCallerModelOverride: true, defaultMaxTurns: 12, graceTurns: 2, agentModels: {} };
 function read(file: string): Partial<Settings> & Record<string, unknown> {
   if (!existsSync(file)) return {};
   try { const value = JSON.parse(readFileSync(file, "utf8")); return value && typeof value === "object" ? value : {}; } catch { return {}; }

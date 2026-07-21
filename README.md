@@ -94,7 +94,7 @@ Project agents are untrusted code-adjacent configuration. Pi project trust is re
 
 For a new run, the precedence is:
 
-1. Caller `Agent.model`, only when `allowCallerModelOverride` is true.
+1. Caller `Agent.model` for a one-off task override. This is enabled by default and can be disabled with `allowCallerModelOverride`.
 2. Session override.
 3. Project `agentModels` entry.
 4. Global `agentModels` entry.
@@ -120,7 +120,7 @@ Settings are versioned JSON. Global settings are stored at `~/.pi/agent/subagent
   "maxConcurrent": 4,
   "joinMode": "smart",
   "groupTimeoutMs": 30000,
-  "allowCallerModelOverride": false,
+  "allowCallerModelOverride": true,
   "defaultMaxTurns": 12,
   "graceTurns": 2,
   "agentModels": {
