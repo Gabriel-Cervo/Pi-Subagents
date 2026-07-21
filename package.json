@@ -8,9 +8,9 @@
   "repository": { "type": "git", "url": "https://github.com/Gabriel-Cervo/Pi-Subagents.git" },
   "homepage": "https://github.com/Gabriel-Cervo/Pi-Subagents#readme",
   "bugs": { "url": "https://github.com/Gabriel-Cervo/Pi-Subagents/issues" },
-  "files": ["src", "README.md", "LICENSE"],
+  "files": ["src", "skills", "README.md", "LICENSE"],
   "engines": { "node": ">=22.19.0" },
-  "pi": { "extensions": ["./src/index.ts"] },
+  "pi": { "extensions": ["./src/index.ts"], "skills": ["./skills"] },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
