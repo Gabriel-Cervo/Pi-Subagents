@@ -8,6 +8,7 @@ import { resolveAgentModel, resolveModelSpec, modelKey } from "./models.ts";
 import { BoundedScheduler } from "./scheduler.ts";
 import { applyTurnPolicy, type TurnPolicyState } from "./turn-policy.ts";
 import { THINKING_LEVELS, type AgentDefinition, type AgentRequest, type RunResult, type SessionOverrides, type ThinkingLevel } from "./types.ts";
+import { notificationContent, notificationDetails } from "./rendering.ts";
 import { safeJson, truncate, textOf } from "./util.ts";
 
 interface RecordState extends RunResult {
@@ -19,7 +20,7 @@ interface RecordState extends RunResult {
   session?: any;
   sessionUnsubscribe?: () => void;
   abortListener?: () => void;
-  onUpdate?: (output: string) => void;
+  onUpdate?: (output: string, result: RunResult) => void;
   controller: AbortController;
   pendingSteer?: string;
   promise: Promise<RunResult>;
@@ -71,14 +72,15 @@ export class SubagentManager {
   private notifyOne(record: RecordState): void {
     if (record.consumed || this.disposed) return;
     record.consumed = true;
-    this.pi.sendMessage({ customType: "subagents", content: `Subagent ${record.agent} completed (${record.status}):\n${truncate(record.output || record.error || record.partialOutput || "(no output)", 5000)}`, display: true, details: { id: record.id } }, { triggerTurn: true, deliverAs: "followUp" });
+    const details = notificationDetails("individual", [this.publicResult(record)]);
+    this.pi.sendMessage({ customType: "subagents", content: notificationContent(details), display: true, details }, { triggerTurn: true, deliverAs: "followUp" });
   }
   private notifyBatch(records: RecordState[]): void {
     const deliverable = records.filter((r) => !r.consumed);
     if (!deliverable.length) return;
     for (const r of deliverable) r.consumed = true;
-    const lines = deliverable.map((r) => `${r.agent}: ${r.status}\n${truncate(r.output || r.error || r.partialOutput || "(no output)", 4000)}`);
-    this.pi.sendMessage({ customType: "subagents", content: `Subagents completed (${deliverable.length}):\n\n${lines.join("\n\n")}`, display: true, details: { ids: deliverable.map((r) => r.id) } }, { triggerTurn: true, deliverAs: "followUp" });
+    const details = notificationDetails("batch", deliverable.map((record) => this.publicResult(record)));
+    this.pi.sendMessage({ customType: "subagents", content: notificationContent(details), display: true, details }, { triggerTurn: true, deliverAs: "followUp" });
   }
   private maybeNotify(group: Group): void {
     const settings = this.settings?.effective(this.sessionOverrides);
@@ -151,7 +153,7 @@ export class SubagentManager {
     this.runtime = parentRuntime ?? await (this.runtimePromise ??= ModelRuntime.create());
     return this.runtime;
   }
-  private async createRecord(request: AgentRequest, onUpdate?: (output: string) => void): Promise<RecordState> {
+  private async createRecord(request: AgentRequest, onUpdate?: (output: string, result: RunResult) => void): Promise<RecordState> {
     if (!request.prompt?.trim()) throw new Error("Agent.prompt must be non-empty.");
     if (!request.description?.trim()) throw new Error("Agent.description must be non-empty.");
     if (!request.subagent_type?.trim()) throw new Error("Agent.subagent_type must be non-empty.");
@@ -194,7 +196,7 @@ export class SubagentManager {
     if (group && group.runs.size >= 2) this.maybeNotify(group);
     return record;
   }
-  async launch(request: AgentRequest, onUpdate?: (output: string) => void, signal?: AbortSignal): Promise<RunResult> {
+  async launch(request: AgentRequest, onUpdate?: (output: string, result: RunResult) => void, signal?: AbortSignal): Promise<RunResult> {
     const record = await this.createRecord(request, onUpdate);
     if (signal) {
       const stop = () => { void this.stop(record.id); };
@@ -241,7 +243,7 @@ export class SubagentManager {
         }
         record.sessionUnsubscribe = record.session.subscribe((event: any) => {
           if (event.type === "message_start" && event.message?.role === "assistant") record.partialOutput = "";
-          if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") { record.partialOutput = truncate(`${record.partialOutput ?? ""}${event.assistantMessageEvent.delta}`); record.onUpdate?.(record.partialOutput); }
+          if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") { record.partialOutput = truncate(`${record.partialOutput ?? ""}${event.assistantMessageEvent.delta}`); record.onUpdate?.(record.partialOutput, this.publicResult(record)); }
           if (event.type === "message_end" && event.message?.role === "assistant" && event.message && !record.finalizedMessages.has(event.message)) {
             record.finalizedMessages.add(event.message);
             const text = textOf(event.message);
@@ -249,7 +251,7 @@ export class SubagentManager {
               record.fullOutput = text;
               record.output = truncate(text);
             }
-            record.onUpdate?.(record.output || record.partialOutput || "");
+            record.onUpdate?.(record.output || record.partialOutput || "", this.publicResult(record));
           }
           if (event.type === "turn_end") { record.turns++; this.enforceTurns(record); }
         });

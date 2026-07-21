@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { Container, type SelectItem, SelectList, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
 import { CONFIG_DIR_NAME, DynamicBorder, type ExtensionAPI, type ExtensionContext, getAgentDir, getSettingsListTheme, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { SubagentManager, agentSchema, resultSchema, steerSchema } from "./manager.ts";
+import { agentResultViewModel, statusColorRole, statusIcon, SubagentNotificationComponent, ThemedLines, type ThemedLine } from "./rendering.ts";
 import type { AgentRequest, RunResult } from "./types.ts";
 
 function asError(error: unknown): string { return error instanceof Error ? error.message : String(error); }
@@ -16,10 +17,31 @@ function failedRunMessage(result: RunResult): string {
   return `${result.error || `Subagent ${result.status}.`}${partial ? `\n\nPartial output:\n${partial}` : ""}`;
 }
 
+function resultText(result: any): string {
+  return result?.content?.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n") ?? "";
+}
+
+function renderRunResult(result: any, options: { isPartial: boolean }, theme: any, context: any): Text {
+  const view = agentResultViewModel(result?.details, resultText(result), options.isPartial, context.isError, context.args?.subagent_type);
+  const icon = theme.fg(statusColorRole(view.status), statusIcon(view.status));
+  const name = theme.fg("toolTitle", theme.bold(view.agent));
+  const status = theme.fg(statusColorRole(view.status), view.status);
+  const meta = result?.details?.id
+    ? theme.fg("dim", ` ${result.details.id} · ${result.details.model ?? "model?"} · ${result.details.turns ?? 0} turns`)
+    : "";
+
+  if (view.loading) return new Text(`${icon} ${name} ${theme.fg("warning", "running")}${meta}`, 0, 0);
+  if (view.error || view.status === "failed" || view.status === "aborted") {
+    return new Text(`${icon} ${name} ${status}${meta}\n${theme.fg("error", view.error || `Subagent ${view.status}.`)}`, 0, 0);
+  }
+  const output = view.output || "(no output)";
+  return new Text(`${icon} ${name} ${status}${meta}\n${theme.fg("toolOutput", output.slice(0, 500))}`, 0, 0);
+}
+
 interface DetailedChoice {
   value: string;
   label: string;
-  details: string[];
+  details: ThemedLine[];
 }
 
 async function selectDetailed(ctx: ExtensionContext, title: string, choices: DetailedChoice[]): Promise<string | undefined> {
@@ -31,7 +53,7 @@ async function selectDetailed(ctx: ExtensionContext, title: string, choices: Det
   return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
     const container = new Container();
     container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
-    container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
+    container.addChild(new ThemedLines(theme, [[{ text: title, role: "accent", bold: true }]]));
 
     const items: SelectItem[] = choices.map(({ value, label }) => ({ value, label }));
     const list = new SelectList(items, Math.min(items.length, 10), {
@@ -43,14 +65,14 @@ async function selectDetailed(ctx: ExtensionContext, title: string, choices: Det
     }, { minPrimaryColumnWidth: 20, maxPrimaryColumnWidth: 48 });
     container.addChild(list);
 
-    const details = new Text("", 1, 1);
+    const details = new ThemedLines(theme);
     const showDetails = (value: string) => {
       const choice = choices.find((candidate) => candidate.value === value);
-      details.setText(choice ? choice.details.map((line) => theme.fg("muted", line)).join("\n") : "");
+      details.setLines(choice ? choice.details : []);
     };
     showDetails(choices[0].value);
     container.addChild(details);
-    container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc back"), 1, 0));
+    container.addChild(new ThemedLines(theme, [[{ text: "↑↓ navigate • enter select • esc back", role: "dim" }]]));
     container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 
     list.onSelectionChange = (item) => { showDetails(item.value); tui.requestRender(); };
@@ -72,8 +94,8 @@ async function selectAgentTools(ctx: ExtensionContext): Promise<string[] | undef
   await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
     const container = new Container();
     container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
-    container.addChild(new Text(theme.fg("accent", theme.bold("Select agent tools")), 1, 0));
-    container.addChild(new Text(theme.fg("dim", "Change values with ←/→ or Enter. Press Esc when finished."), 1, 0));
+    container.addChild(new ThemedLines(theme, [[{ text: "Select agent tools", role: "accent", bold: true }]]));
+    container.addChild(new ThemedLines(theme, [[{ text: "Change values with ←/→ or Enter. Press Esc when finished.", role: "dim" }]]));
     const items: SettingItem[] = AGENT_TOOLS.map((tool) => ({ id: tool, label: tool, currentValue: "enabled", values: ["enabled", "disabled"] }));
     const list = new SettingsList(items, items.length + 1, getSettingsListTheme(), (id, value) => {
       if (value === "enabled") selected.add(id); else selected.delete(id);
@@ -153,6 +175,11 @@ async function createAgent(ctx: ExtensionContext, manager: SubagentManager): Pro
 
 export default async function (pi: ExtensionAPI): Promise<void> {
   let manager: SubagentManager | undefined;
+  pi.registerMessageRenderer("subagents", (message, { expanded }, theme) => {
+    const details = message.details as { type?: string; kind?: string; runs?: unknown[] } | undefined;
+    if (details?.type !== "subagent-notification" || !Array.isArray(details.runs)) return undefined;
+    return new SubagentNotificationComponent(details as any, expanded, theme);
+  });
   pi.on("session_start", async (_event, ctx) => { manager?.cleanup(); manager = new SubagentManager(pi, ctx); await manager.start(); });
   pi.on("session_shutdown", async () => { manager?.cleanup(); manager = undefined; });
 
@@ -161,13 +188,16 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     async execute(_id, params, _signal, onUpdate) {
       const active = requireManager(manager);
       try {
-        const result = await active.launch(params as unknown as AgentRequest, (partial) => onUpdate?.({ content: [{ type: "text", text: partial }], details: { status: "running" } }), _signal);
+        const result = await active.launch(params as unknown as AgentRequest, (partial, snapshot) => onUpdate?.({
+          content: [{ type: "text", text: partial }],
+          details: { ...snapshot, output: partial, partialOutput: partial, status: "running" },
+        }), _signal);
         if (result.status === "failed" || result.status === "aborted") throw new Error(failedRunMessage(result));
         return { content: [{ type: "text", text: result.status === "queued" || result.status === "running" ? `Queued ${result.agent} as ${result.id}. Use get_subagent_result to wait.` : outputText(result) }], details: result };
       } catch (error) { throw new Error(asError(error), { cause: error }); }
     },
     renderCall(args, theme) { return new Text(`${theme.fg("toolTitle", "Agent")} ${theme.fg("accent", args.subagent_type)} ${theme.fg("dim", args.description)}`, 0, 0); },
-    renderResult(result, _options, theme) { const text = (result as any).content?.find((part: any) => part.type === "text")?.text ?? ""; return new Text(theme.fg("toolOutput", text.slice(0, 500)), 0, 0); },
+    renderResult(result, options, theme, context) { return renderRunResult(result, options, theme, context); },
   });
   pi.registerTool({
     name: "get_subagent_result", label: "Get subagent result", description: "Wait for a session-local subagent run without polling and return its partial or final output.", parameters: resultSchema,
@@ -176,6 +206,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       catch (error) { throw new Error(asError(error), { cause: error }); }
     },
     renderCall(args, theme) { return new Text(`${theme.fg("toolTitle", "get_subagent_result")} ${theme.fg("accent", args.agent_id)}`, 0, 0); },
+    renderResult(result, options, theme, context) { return renderRunResult(result, options, theme, context); },
   });
   pi.registerTool({
     name: "steer_subagent", label: "Steer subagent", description: "Add an instruction to a queued or running session-local subagent.", parameters: steerSchema,
@@ -184,6 +215,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       catch (error) { throw new Error(asError(error), { cause: error }); }
     },
     renderCall(args, theme) { return new Text(`${theme.fg("toolTitle", "steer_subagent")} ${theme.fg("accent", args.agent_id)} ${theme.fg("dim", args.message.slice(0, 80))}`, 0, 0); },
+    renderResult(result, options, theme, context) { return renderRunResult(result, options, theme, context); },
   });
 
   pi.registerCommand("agents", { description: "Inspect and configure Pi subagents", handler: async (_args, ctx) => {
@@ -210,12 +242,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           const runs = active.list();
           const selected = await selectDetailed(ctx, "Active and recent runs", runs.map((run) => ({
             value: run.id,
-            label: `${run.status === "running" ? "◉" : run.status === "completed" ? "✓" : run.status === "queued" ? "○" : "✗"} ${run.agent} — ${run.status}`,
+            label: `${statusIcon(run.status)} ${run.agent} — ${run.status}`,
             details: [
-              run.description,
-              `ID: ${run.id}`,
-              `Model: ${run.model} (${run.modelSource})`,
-              `Thinking: ${run.thinking}  •  Turns: ${run.turns}`,
+              [{ text: run.description, role: "text" }],
+              [{ text: "Status: ", role: "muted" }, { text: `${statusIcon(run.status)} ${run.status}`, role: statusColorRole(run.status) }],
+              [{ text: "ID: ", role: "muted" }, { text: run.id, role: "dim" }],
+              [{ text: "Model: ", role: "muted" }, { text: `${run.model} (${run.modelSource})`, role: "dim" }],
+              [{ text: "Thinking: ", role: "muted" }, { text: `${run.thinking}  •  Turns: ${run.turns}`, role: "dim" }],
             ],
           })));
           const run = runs.find((candidate) => candidate.id === selected); if (!run) continue;
@@ -227,11 +260,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
             value: def.name,
             label: `${def.enabled ? "●" : "○"} ${def.displayName}`,
             details: [
-              def.description,
-              `Source: ${def.source}  •  Status: ${def.enabled ? "enabled" : "disabled"}`,
-              `Model: ${def.effectiveModel ?? "inherit/default"}`,
-              `Model source: ${def.effectiveModelSource ?? "unresolved"}`,
-              `Tools: ${def.tools.join(", ") || "none"}`,
+              [{ text: def.description, role: "text" }],
+              [{ text: "Source: ", role: "muted" }, { text: `${def.source}  •  `, role: "dim" }, { text: def.enabled ? "● enabled" : "○ disabled", role: def.enabled ? "success" : "muted" }],
+              [{ text: "Model: ", role: "muted" }, { text: def.effectiveModel ?? "inherit/default", role: "dim" }],
+              [{ text: "Model source: ", role: "muted" }, { text: def.effectiveModelSource ?? "unresolved", role: "dim" }],
+              [{ text: "Tools: ", role: "muted" }, { text: def.tools.join(", ") || "none", role: "dim" }],
             ],
           })));
           const def = defs.find((candidate) => candidate.name === selected); if (!def) continue;
