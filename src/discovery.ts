@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { defaultAgentDefinitions } from "./builtins.ts";
+import { HERDR_KINDS, type HerdrKind } from "./herdr.ts";
 import type { AgentDefinition, AgentSource, BuiltinTool, ThinkingLevel } from "./types.ts";
 import { BUILTIN_TOOLS, THINKING_LEVELS } from "./types.ts";
 
@@ -34,16 +35,20 @@ function list(dir: string, source: AgentSource, project: boolean, warnings: stri
       if (frontmatter.tools !== undefined && !tools.length) warnOnce(warnings, warned, `Ignoring invalid tools in ${filePath}; no built-in tools were enabled.`);
       const thinking = frontmatter.thinking === undefined ? undefined : String(frontmatter.thinking);
       if (thinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(thinking)) { warnOnce(warnings, warned, `Ignoring ${filePath}: thinking must be one of ${THINKING_LEVELS.join(", ")}.`); continue; }
-      const rawMax = frontmatter.max_turns;
-      const maxTurns = rawMax === undefined ? undefined : typeof rawMax === "number" ? rawMax : typeof rawMax === "string" && /^\d+$/.test(rawMax) ? Number(rawMax) : NaN;
-      if (maxTurns !== undefined && (!Number.isInteger(maxTurns) || maxTurns < 0)) { warnOnce(warnings, warned, `Ignoring ${filePath}: max_turns must be a non-negative integer.`); continue; }
+      const kind = frontmatter.kind === undefined ? "pi" : String(frontmatter.kind).trim().toLowerCase();
+      if (!(HERDR_KINDS as readonly string[]).includes(kind)) { warnOnce(warnings, warned, `Ignoring ${filePath}: kind must be one of ${HERDR_KINDS.join(", ")}.`); continue; }
+      let args: string[] | undefined;
+      if (frontmatter.args !== undefined) {
+        if (!Array.isArray(frontmatter.args) || !frontmatter.args.every((arg) => typeof arg === "string")) { warnOnce(warnings, warned, `Ignoring ${filePath}: args must be a string array.`); continue; }
+        args = [...frontmatter.args] as string[];
+      }
       const enabled = frontmatter.enabled === undefined ? true : frontmatter.enabled;
       if (typeof enabled !== "boolean") { warnOnce(warnings, warned, `Ignoring ${filePath}: enabled must be boolean.`); continue; }
       const model = frontmatter.model === undefined ? undefined : typeof frontmatter.model === "string" && frontmatter.model.trim() ? frontmatter.model.trim() : undefined;
       if (frontmatter.model !== undefined && !model) { warnOnce(warnings, warned, `Ignoring ${filePath}: model must be a non-empty string.`); continue; }
       const legacyFields = Object.keys(frontmatter).filter((field) => LEGACY.has(field));
       for (const field of legacyFields) warnOnce(warnings, warned, `Unsupported legacy agent field '${field}' in ${filePath}`);
-      result.push({ name, displayName: typeof frontmatter.display_name === "string" ? frontmatter.display_name : name, description, tools, model, thinking: thinking as ThinkingLevel | undefined, maxTurns, enabled, prompt: body.trim(), source, project, filePath, legacyFields });
+      result.push({ name, displayName: typeof frontmatter.display_name === "string" ? frontmatter.display_name : name, description, tools, model, thinking: thinking as ThinkingLevel | undefined, kind: kind as HerdrKind, args, enabled, prompt: body.trim(), source, project, filePath, legacyFields });
     } catch (error) { warnOnce(warnings, warned, `Ignoring malformed agent definition ${filePath}: ${error instanceof Error ? error.message : String(error)}`); }
   }
   return result;

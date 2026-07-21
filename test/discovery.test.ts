@@ -4,6 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { discoverAgents } from "../src/discovery.ts";
 
+test("definitions parse Herdr kind and string args", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-subagents-")); await mkdir(path.join(root, ".pi", "agents"), { recursive: true });
+  await writeFile(path.join(root, ".pi", "agents", "reviewer.md"), `---\ndescription: Review\nkind: claude\nargs:\n  - --dangerously-skip-permissions\n  - --verbose\n---\nReview files`);
+  const reviewer = discoverAgents(root, true, new Set()).agents.find((item) => item.name === "reviewer");
+  expect(reviewer).toMatchObject({ kind: "claude", args: ["--dangerously-skip-permissions", "--verbose"] });
+});
+
 test("project definitions override defaults and parse supported frontmatter", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-subagents-"));
   await mkdir(path.join(root, ".pi", "agents"), { recursive: true });

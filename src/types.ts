@@ -1,4 +1,5 @@
 import type { Model } from "@earendil-works/pi-ai";
+import type { HerdrKind } from "./herdr.ts";
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
@@ -15,7 +16,8 @@ export interface AgentDefinition {
   tools: BuiltinTool[];
   model?: string;
   thinking?: ThinkingLevel;
-  maxTurns?: number;
+  kind: HerdrKind;
+  args?: string[];
   enabled: boolean;
   prompt: string;
   source: AgentSource;
@@ -27,13 +29,12 @@ export interface AgentDefinition {
 }
 
 export interface Settings {
-  version: 1;
+  version: 2;
   maxConcurrent: number;
   joinMode: JoinMode;
   groupTimeoutMs: number;
   allowCallerModelOverride: boolean;
-  defaultMaxTurns: number;
-  graceTurns: number;
+  runTimeoutMs: number;
   agentModels: Record<string, string>;
   [key: string]: unknown;
 }
@@ -43,8 +44,7 @@ export interface SessionOverrides {
   joinMode?: JoinMode;
   groupTimeoutMs?: number;
   allowCallerModelOverride?: boolean;
-  defaultMaxTurns?: number;
-  graceTurns?: number;
+  runTimeoutMs?: number;
   agentModels?: Record<string, string | undefined>;
 }
 
@@ -56,7 +56,7 @@ export interface AgentRequest {
   resume?: string;
   model?: string;
   thinking?: ThinkingLevel;
-  max_turns?: number;
+  kind?: HerdrKind;
   inherit_context?: boolean;
 }
 
@@ -64,14 +64,15 @@ export interface RunResult {
   id: string;
   agent: string;
   description: string;
-  status: "queued" | "running" | "completed" | "failed" | "aborted";
+  status: "queued" | "running" | "blocked" | "completed" | "failed" | "aborted";
   output: string;
   partialOutput?: string;
   error?: string;
+  diagnostics?: string;
   model: string;
   modelSource: string;
   thinking: ThinkingLevel;
-  turns: number;
+  prompts: number;
   createdAt: number;
   completedAt?: number;
   groupId?: string;

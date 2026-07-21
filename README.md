@@ -1,159 +1,65 @@
 # Pi Subagents
 
-Pi Subagents adds native, in-process delegation to [Pi](https://github.com/earendil-works/pi). It exposes three tools, `Agent`, `get_subagent_result`, and `steer_subagent`, plus an `/agents` configuration menu.
+Pi Subagents delegates work to [Herdr](https://herdr.dev), keeping one isolated, unfocused Herdr tab per run in the parent workspace. It exposes `Agent`, `get_subagent_result`, `steer_subagent`, and `/agents`.
 
-## Install
+## Requirements
 
-From GitHub:
-
-```sh
-pi install git:github.com/Gabriel-Cervo/Pi-Subagents
-```
-
-From a checkout:
-
-```sh
-pi install /Users/gabrielcervo/Documents/projects/Pi-Subagents
-# or, from the checkout:
-pi install .
-```
-
-The package is loaded directly from `src/index.ts`. Pi supplies the peer dependencies at runtime.
-
-## Architecture
-
-Each child uses Pi's SDK `createAgentSession` with `SessionManager.inMemory()` and the parent registry's live `ModelRuntime` when available. The resolved Model object is retained and passed directly to the child, including dynamically registered/custom-provider models. Children run in the same Node process. They don't load extensions, skills, prompt templates, themes, or context files. Their resource loader supplies only a short isolated system prompt. Their tool allowlist contains only validated built-in tools.
-
-The manager keeps session-local run records. It owns a FIFO queue, default concurrency of four, abort controllers, child-session disposal, result promises, and partial output. A background call returns immediately with a run id. `get_subagent_result` awaits that run's promise instead of polling. Agent calls, streaming results, `/agents` status/details, and background completion messages use Pi's active theme; notification metadata remains structured separately from concise plain-text model content. `steer_subagent` works while a child is queued or running. A steer received before initialization is attached to the first prompt.
-
-Foreground calls stream text updates through Pi's tool update API. Results are capped at 50 KiB for model-visible output. Full lifecycle state is kept only in memory. Session replacement, reload, and shutdown abort queued and running work and dispose child sessions.
+The extension must run inside Herdr 0.7.5 (`HERDR_ENV=1` and `HERDR_WORKSPACE_ID`). Outside Herdr, the tools fail with a clear error and `/agents` reports Herdr as unavailable. There is no in-process or Pi fallback.
 
 ## Usage
-
-Ask Pi to use an agent, or call the tools directly:
 
 ```json
 {
   "prompt": "Find the authentication entry points and summarize them.",
   "description": "Map authentication",
   "subagent_type": "Explore",
-  "run_in_background": true,
-  "inherit_context": false
+  "run_in_background": true
 }
 ```
 
-Then call `get_subagent_result` with the returned `agent_id` (optionally `wait` and `verbose`). Use `steer_subagent` with `agent_id` and `message` to add an instruction. `inherit_context` is opt-in. When enabled, Pi copies a defensive snapshot of the parent message context into the child. Mutable parent state is never shared.
+Use `get_subagent_result` with the returned `agent_id`, and `steer_subagent` to send a new prompt. `kind` optionally overrides the definition's Herdr kind for one call. `resume` retains the original run ID, opens a fresh tab, and prepends the previous result to the new prompt. `inherit_context` prepends readable, image-free parent Markdown capped at 50 KiB.
 
-### Model-driven dispatch
+Background runs retain FIFO scheduling and smart joins. Status metadata reports Herdr prompt count (`prompts`), not internal LLM turns. Results are delimited, read from the settled Herdr agent, capped at 50 KiB, and the owned tab is closed after success, failure, abort, or timeout. The default timeout is 1,800,000 ms; `runTimeoutMs: 0` disables it. On incomplete terminal output the agent is asked to write Markdown to a temporary path. Approval/question states are returned as `blocked`, notified to the parent, and left open for inspection or steering.
 
-`Agent` is a model-driven tool: its prompt metadata asks the parent model to choose a built-in definition proactively, rather than selecting or launching one through extension hooks. Use `Explore` for broad or read-only repository exploration, `Plan` for planning, `implementer` for focused coding/testing, and `general-purpose` otherwise. The model should avoid delegating trivial work, and should give each meaningful delegation a focused prompt.
+## Agent definitions
 
-Independent, meaningful workstreams can be delegated with separate `run_in_background: true` calls and collected with `get_subagent_result`; dependent work should remain sequential. The extension does not auto-launch agents from user input or `before_agent_start`/other input hooks.
-
-Run `/agents` to manage:
-
-- Active and recent runs. View, steer, or stop them.
-- Agents, their source, enabled state, effective model, and tools.
-- Create a new agent through a guided wizard: name, description, functionality/instructions, tool selection, model, and project/global source.
-- Per-agent model selection.
-- Project-agent approval and revocation.
-- Definition reloads.
-
-Agents created from the menu are written immediately to `.pi/agents/<name>.md` for project scope or `~/.pi/agent/agents/<name>.md` for global scope, then dynamically reloaded. Choosing `Inherit parent model` omits the model pin so future runs follow the current parent model.
-
-The model picker includes `Inherit/default` and authenticated models known by Pi's registry. Changes affect future runs. A resumed run keeps its original model and thinking configuration.
-
-## Built-in agent types
-
-| Name | Purpose | Tools | Default model |
-| --- | --- | --- | --- |
-| `general-purpose` | General coding and research | all seven | parent model |
-| `Explore` | Read-only reconnaissance | `read`, `grep`, `find`, `ls` | parent model |
-| `Plan` | Actionable planning | `read`, `grep`, `find`, `ls` | parent model |
-| `implementer` | Implement code and tests, then verify | all seven | parent model |
-
-The implementer is instructed to inspect before editing, make focused changes, run relevant checks, and report changed files and tests.
-
-## Agent files
-
-Global definitions live in `~/.pi/agent/agents/*.md`. The nearest trusted project's `.pi/agents/*.md` directory is also supported. Project definitions override global and default definitions with the same name.
+Global definitions live in `~/.pi/agent/agents/*.md`; trusted project definitions live in the nearest `.pi/agents/*.md` and override defaults. Built-ins are `general-purpose`, `Explore`, `Plan`, and `implementer`, all defaulting to Herdr's `pi` kind.
 
 ```md
 ---
 name: reviewer
 display_name: Reviewer
-description: Reviews focused changes for correctness and tests.
-tools: read, grep, find, ls, bash
-model: openai-codex/gpt-5.6-luna
+description: Reviews focused changes.
+kind: pi
+model: provider/model
 thinking: medium
-max_turns: 8
+tools: read, grep, find, ls
 enabled: true
 ---
-Inspect the change, identify concrete problems, and report paths and tests. Do not edit files.
+Inspect the change and report actionable findings.
 ```
 
-Supported frontmatter fields are `description`, `display_name`, `tools`, `model`, `thinking`, `max_turns`, and `enabled`. The body becomes the system prompt. Unknown legacy fields produce a warning once per parent session. Invalid or unsupported tools are ignored rather than granted.
+`kind` accepts every installed Herdr 0.7.5 kind: `pi`, `claude`, `codex`, `gemini`, `cursor`, `devin`, `agy`, `cline`, `omp`, `mastracode`, `opencode`, `copilot`, `kimi`, `kiro`, `droid`, `amp`, `grok`, `hermes`, `kilo`, `qodercli`, and `maki`. Optional frontmatter `args` is a string array. For the definition's default kind, those arguments are passed unchanged. A per-call kind override ignores definition args. Pi receives safe generated flags for model, thinking, tools, isolation, and system prompt; non-Pi kinds receive only explicit definition args.
 
-Project agents are untrusted code-adjacent configuration. Pi project trust is required. Interactive use asks once before the first project agent runs. Headless use errors instead of silently approving project prompts.
-
-## Model precedence
-
-For a new run, the precedence is:
-
-1. Caller `Agent.model` for a one-off task override. This is enabled by default and can be disabled with `allowCallerModelOverride`.
-2. Session override.
-3. Project `agentModels` entry.
-4. Global `agentModels` entry.
-5. Agent-file `model`.
-6. Parent model.
-7. The first authenticated model in Pi's registry.
-
-Explicit model choices must use canonical `provider/model` syntax and must resolve through Pi's model registry. Unresolved choices fail with an actionable error. There is no silent fallback for an explicit choice. Resuming a run rejects conflicting model or thinking overrides.
-
-## Smart join
-
-`joinMode` defaults to `smart`. Pi's `turn_start` and `turn_end` events define a group, so background agents launched in one parent turn do not rely on a debounce timer. For groups with at least two runs, the manager waits for the first completed batch for up to `groupTimeoutMs`. If all finish, Pi receives one concise plain-text follow-up. On timeout, completed runs are delivered together and later stragglers are delivered separately. `async` delivers each background result separately.
-
-There is one join timer per smart group. The extension does not schedule work, create a FleetView, keep a live widget, write transcripts, or emulate Claude XML notifications.
+Project definitions remain subject to Pi project trust and one-time approval. `/agents` can inspect live and blocked runs (Focus, Read, Steer, Stop), view/resume/remove completed records, create definitions with a kind selector, configure Pi models, and migrate settings. The creation wizard asks for tools and model only for `kind: pi`; other kinds use their explicit args.
 
 ## Settings
 
-Settings are versioned JSON. Global settings are stored at `~/.pi/agent/subagents.json`. Project settings are stored at `<cwd>/.pi/subagents.json`. Global values merge first. Project values override them. Session overrides are in memory and override both. Writes are atomic and preserve unknown keys where practical.
+Global settings are `~/.pi/agent/subagents.json`; project settings are `.pi/subagents.json`. Version 2 settings are:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "maxConcurrent": 4,
   "joinMode": "smart",
   "groupTimeoutMs": 30000,
   "allowCallerModelOverride": true,
-  "defaultMaxTurns": 12,
-  "graceTurns": 2,
-  "agentModels": {
-    "Explore": "openai-codex/gpt-5.6-luna",
-    "Plan": "openai-codex/gpt-5.6-sol",
-    "implementer": "openai-codex/gpt-5.6-luna"
-  }
+  "runTimeoutMs": 1800000,
+  "agentModels": {}
 }
 ```
 
-`defaultMaxTurns` and `max_turns` use `0` for unlimited. At the limit, the child receives one wrap-up steer, then gets `graceTurns` additional turns before abort and partial-result return. `maxConcurrent` is bounded to a safe positive range. `/agents` mutations can be persisted globally or to the project. Session-only model changes are not written to disk.
-
-## Security and trust
-
-Pi extensions run with the host process's permissions. Review this package before installing it. Child agents can use the built-in tools allowed by their definition, including `bash`, `write`, and `edit` when enabled. Project agent files are repository-controlled prompts and require trust plus approval. The package never loads child extensions, skills, prompts, themes, or context files.
-
-## Migration from `@tintinweb/pi-subagents`
-
-This package intentionally uses Pi's in-process SDK instead of spawning `pi --mode json` subprocesses. Existing files can be reused after converting their frontmatter to the format above. The old `subagent` tool is not registered. This replacement intentionally preserves the `Agent`, `get_subagent_result`, and `steer_subagent` argument compatibility of `@tintinweb/pi-subagents`: use `Agent` with `prompt`, required `description` and `subagent_type`, then use `get_subagent_result` with `agent_id` and `steer_subagent` with `agent_id` plus `message`. Parallel and chain workflows should be expressed as separate `Agent` calls. This keeps queueing, resume, steering, and model selection session-local.
-
-## Limitations
-
-- Child sessions are in-memory and are not resumable across Pi process restarts.
-- Run records are session-local and are cleared on reload or replacement.
-- This package does not provide worktrees, scheduling, persistent memory, transcripts, cross-extension RPC, or a live dashboard.
-- Child output is intentionally truncated before it is returned to the model.
-- Project agent approval is not available in headless mode.
+Version 1 files retain relevant values, drop `defaultMaxTurns` and `graceTurns`, and are written as version 2. Model precedence remains caller override (when enabled), settings, definition, parent/default.
 
 ## Development
 
@@ -162,11 +68,3 @@ npm install
 npm run typecheck
 npm test
 ```
-
-The implementation is split between discovery (`src/discovery.ts`), settings (`src/settings.ts`), model resolution (`src/models.ts`), lifecycle and queue management (`src/manager.ts`), and the Pi extension entry point (`src/index.ts`).
-
-## Sources
-
-- [Pi SDK documentation](https://github.com/earendil-works/pi/tree/main/packages/coding-agent/docs/sdk.md)
-- [Pi extension documentation](https://github.com/earendil-works/pi/tree/main/packages/coding-agent/docs/extensions.md)
-- [Pi package documentation](https://github.com/earendil-works/pi/tree/main/packages/coding-agent/docs/packages.md)

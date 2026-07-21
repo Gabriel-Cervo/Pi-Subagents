@@ -10,7 +10,8 @@ export type RenderColorRole = StatusColorRole | "text" | "muted" | "dim" | "tool
 export function statusColorRole(status: RunResult["status"]): StatusColorRole {
   switch (status) {
     case "queued": return "accent";
-    case "running": return "warning";
+    case "running":
+    case "blocked": return "warning";
     case "completed": return "success";
     case "failed":
     case "aborted": return "error";
@@ -21,6 +22,7 @@ export function statusIcon(status: RunResult["status"]): string {
   switch (status) {
     case "queued": return "○";
     case "running": return "●";
+    case "blocked": return "!";
     case "completed": return "✓";
     case "failed":
     case "aborted": return "✗";
@@ -34,7 +36,7 @@ export interface NotificationRun {
   status: RunResult["status"];
   model: string;
   modelSource: string;
-  turns: number;
+  prompts: number;
   result?: string;
   error?: string;
 }
@@ -55,7 +57,7 @@ export function notificationRun(result: RunResult): NotificationRun {
     status: result.status,
     model: result.model,
     modelSource: result.modelSource,
-    turns: result.turns,
+    prompts: result.prompts,
     result: output || undefined,
     error: result.error,
   };
@@ -78,9 +80,9 @@ export function notificationContent(details: SubagentNotificationDetails): strin
   if (details.kind === "individual") {
     const run = details.runs[0];
     if (!run) return "No subagent notification.";
-    return `Subagent ${run.agent} (${run.id}) ${run.status}:\n${notificationOutcome(run, 5000)}`;
+    return `Subagent ${run.agent} (${run.id}) ${run.status} (${run.prompts} prompts):\n${notificationOutcome(run, 5000)}`;
   }
-  const lines = details.runs.map((run) => `${run.agent} (${run.id}) ${run.status}:\n${notificationOutcome(run, 4000)}`);
+  const lines = details.runs.map((run) => `${run.agent} (${run.id}) ${run.status} (${run.prompts} prompts):\n${notificationOutcome(run, 4000)}`);
   return `Subagent results (${details.runs.length}):\n${lines.join("\n")}`;
 }
 
@@ -165,7 +167,7 @@ export class SubagentNotificationComponent extends Container {
     if (expanded || this.details.kind === "individual") {
       box.addChild(new Text(this.theme.fg("text", run.description), 0, 0));
       box.addChild(new Text(
-        `${this.theme.fg("muted", "model ")}${this.theme.fg("dim", run.model)} ${this.theme.fg("muted", `(${run.modelSource}) · ${run.turns} turns`)}`,
+        `${this.theme.fg("muted", "model ")}${this.theme.fg("dim", run.model)} ${this.theme.fg("muted", `(${run.modelSource}) · ${run.prompts} prompts`)}`,
         0,
         0,
       ));
@@ -196,7 +198,7 @@ export function agentResultViewModel(
   fallbackAgent = "Agent",
 ): AgentResultViewModel {
   const candidate = details as Partial<RunResult> | undefined;
-  const validStatus = candidate?.status && ["queued", "running", "completed", "failed", "aborted"].includes(candidate.status)
+  const validStatus = candidate?.status && ["queued", "running", "blocked", "completed", "failed", "aborted"].includes(candidate.status)
     ? candidate.status as RunResult["status"]
     : undefined;
   const status = validStatus ?? (isPartial ? "running" : isError ? "failed" : "completed");

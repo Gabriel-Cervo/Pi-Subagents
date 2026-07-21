@@ -11,7 +11,7 @@ const run = (overrides: Partial<RunResult> = {}): RunResult => ({
   model: "provider/model",
   modelSource: "parent",
   thinking: "medium",
-  turns: 2,
+  prompts: 2,
   createdAt: 1,
   ...overrides,
 });
@@ -20,6 +20,7 @@ describe("subagent rendering view models", () => {
   test.each([
     ["queued", "accent", "○"],
     ["running", "warning", "●"],
+    ["blocked", "warning", "!"],
     ["completed", "success", "✓"],
     ["failed", "error", "✗"],
     ["aborted", "error", "✗"],
@@ -41,7 +42,7 @@ describe("subagent rendering view models", () => {
         status: "failed",
         model: "provider/model",
         modelSource: "parent",
-        turns: 2,
+        prompts: 2,
         result: "partial",
         error: "rate limited",
       }],
@@ -56,7 +57,7 @@ describe("subagent rendering view models", () => {
   test("shapes a smart-joined batch with per-run metadata and ids", () => {
     const details = notificationDetails("batch", [
       run(),
-      run({ id: "run-2", agent: "Plan", status: "aborted", output: "", partialOutput: "Partial plan", turns: 4, error: "stopped" }),
+      run({ id: "run-2", agent: "Plan", status: "aborted", output: "", partialOutput: "Partial plan", prompts: 4, error: "stopped" }),
     ]);
     expect(details.kind).toBe("batch");
     expect(details.ids).toEqual(["run-1", "run-2"]);
@@ -65,12 +66,12 @@ describe("subagent rendering view models", () => {
       agent: "Plan",
       description: "Inspect the repository",
       status: "aborted",
-      turns: 4,
+      prompts: 4,
       result: "Partial plan",
       error: "stopped",
     });
     const content = notificationContent(details);
-    expect(content).toContain("Plan (run-2) aborted:");
+    expect(content).toContain("Plan (run-2) aborted (4 prompts):");
     expect(content).toContain("Error: stopped");
     expect(content).toContain("Partial output: Partial plan");
   });

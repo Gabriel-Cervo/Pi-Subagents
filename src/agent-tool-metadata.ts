@@ -1,7 +1,7 @@
 import { builtinAgentSummary, builtinDispatchGuidance } from "./builtins.ts";
 
 export const AGENT_TOOL_DESCRIPTION = [
-  "Run an isolated in-process Pi subagent. Choose a built-in type that matches the task; custom configured definitions may also be available.",
+  "Run an isolated Herdr-backed coding agent. Choose a built-in type that matches the task; custom configured definitions may also be available.",
   "Built-in agent definitions:",
   builtinAgentSummary(),
   "Background runs return an id; use get_subagent_result to wait for their results.",

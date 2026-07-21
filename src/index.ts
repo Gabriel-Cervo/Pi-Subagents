@@ -6,13 +6,14 @@ import { SubagentManager, agentSchema, resultSchema, steerSchema } from "./manag
 import { AGENT_TOOL_DESCRIPTION, AGENT_TOOL_PROMPT_GUIDELINES, AGENT_TOOL_PROMPT_SNIPPET } from "./agent-tool-metadata.ts";
 import { agentResultViewModel, statusColorRole, statusIcon, SubagentNotificationComponent, ThemedLines, type ThemedLine } from "./rendering.ts";
 import { BUILTIN_TOOLS, type AgentRequest, type RunResult } from "./types.ts";
+import { HERDR_KINDS } from "./herdr.ts";
 
 export { AGENT_TOOL_DESCRIPTION, AGENT_TOOL_PROMPT_GUIDELINES, AGENT_TOOL_PROMPT_SNIPPET } from "./agent-tool-metadata.ts";
 
 function asError(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function outputText(result: RunResult, verbose = false): string {
   const output = result.output || result.partialOutput || result.error || `(run ${result.id}: ${result.status})`;
-  return verbose ? `[${result.id}] ${result.agent} (${result.status}, model ${result.model} via ${result.modelSource}, ${result.turns} turns)\n${output}` : output;
+  return verbose ? `[${result.id}] ${result.agent} (${result.status}, model ${result.model} via ${result.modelSource}, ${result.prompts} prompts)\n${output}` : output;
 }
 function requireManager(manager: SubagentManager | undefined): SubagentManager { if (!manager) throw new Error("Subagent manager is not initialized."); return manager; }
 function failedRunMessage(result: RunResult): string {
@@ -30,7 +31,7 @@ function renderRunResult(result: any, options: { isPartial: boolean }, theme: an
   const name = theme.fg("toolTitle", theme.bold(view.agent));
   const status = theme.fg(statusColorRole(view.status), view.status);
   const meta = result?.details?.id
-    ? theme.fg("dim", ` ${result.details.id} · ${result.details.model ?? "model?"} · ${result.details.turns ?? 0} turns`)
+    ? theme.fg("dim", ` ${result.details.id} · ${result.details.model ?? "model?"} · ${result.details.prompts ?? 0} prompts`)
     : "";
 
   if (view.loading) return new Text(`${icon} ${name} ${theme.fg("warning", "running")}${meta}`, 0, 0);
@@ -132,11 +133,17 @@ async function createAgent(ctx: ExtensionContext, manager: SubagentManager): Pro
   const functionality = (await ctx.ui.editor("Agent functionality and instructions", `You are ${name}.\n\nDescribe the work you should perform, constraints to follow, and the output you should return.`))?.trim();
   if (!functionality) return;
 
-  const tools = await selectAgentTools(ctx);
-  if (!tools) return;
-  const availableModels = ctx.modelRegistry.getAvailable();
-  const model = await ctx.ui.select("Agent model", ["Inherit parent model", ...availableModels.map((item) => `${item.provider}/${item.id}`)]);
-  if (!model) return;
+  const kind = await ctx.ui.select("Herdr agent kind", [...HERDR_KINDS]);
+  if (!kind) return;
+  let tools: string[] | undefined;
+  let model: string | undefined;
+  if (kind === "pi") {
+    tools = await selectAgentTools(ctx);
+    if (!tools) return;
+    const availableModels = ctx.modelRegistry.getAvailable();
+    model = await ctx.ui.select("Agent model", ["Inherit parent model", ...availableModels.map((item) => `${item.provider}/${item.id}`)]);
+    if (!model) return;
+  }
 
   const source = await ctx.ui.select("Agent source", ["Project (.pi/agents)", "Global (~/.pi/agent/agents)"]);
   if (!source) return;
@@ -159,8 +166,9 @@ async function createAgent(ctx: ExtensionContext, manager: SubagentManager): Pro
     "---",
     `name: ${yamlString(name)}`,
     `description: ${yamlString(description)}`,
-    `tools: ${yamlString(tools.join(", "))}`,
-    ...(model === "Inherit parent model" ? [] : [`model: ${yamlString(model)}`]),
+    ...(kind === "pi" ? [`tools: ${yamlString(tools?.join(", ") ?? "")}`] : []),
+    `kind: ${yamlString(kind)}`,
+    ...(kind === "pi" && model !== "Inherit parent model" ? [`model: ${yamlString(model ?? "")}`] : []),
     "enabled: true",
     "---",
     "",
@@ -183,8 +191,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     if (details?.type !== "subagent-notification" || !Array.isArray(details.runs)) return undefined;
     return new SubagentNotificationComponent(details as any, expanded, theme);
   });
-  pi.on("session_start", async (_event, ctx) => { manager?.cleanup(); manager = new SubagentManager(pi, ctx); await manager.start(); });
-  pi.on("session_shutdown", async () => { manager?.cleanup(); manager = undefined; });
+  pi.on("session_start", async (_event, ctx) => { if (manager) await manager.cleanup(); manager = new SubagentManager(pi, ctx); await manager.start(); });
+  pi.on("session_shutdown", async () => { if (manager) await manager.cleanup(); manager = undefined; });
 
   pi.registerTool({
     name: "Agent", label: "Agent", description: AGENT_TOOL_DESCRIPTION, promptSnippet: AGENT_TOOL_PROMPT_SNIPPET, promptGuidelines: AGENT_TOOL_PROMPT_GUIDELINES, parameters: agentSchema,
@@ -224,6 +232,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   pi.registerCommand("agents", { description: "Inspect and configure Pi subagents", handler: async (_args, ctx) => {
     const active = manager; if (!active) return;
     try {
+      if (!active.herdrAvailable()) ctx.ui.notify(`Herdr unavailable: ${active.herdrUnavailableMessage()}`, "warning");
       while (true) {
         const choice = await ctx.ui.select("Subagents", ["Active/recent runs", "Agents", "Create new agent", "Settings", "Approve/revoke project agents", "Reload definitions", "Close"]);
         if (!choice || choice === "Close") return;
@@ -232,12 +241,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         if (choice === "Approve/revoke project agents") { const action = await ctx.ui.select("Project agents", ["Approve", "Revoke", "Back"]); if (action === "Approve") { const approved = await active.approveProject(); ctx.ui.notify(approved ? "Project agents approved for this session." : "Project agents not approved.", approved ? "info" : "warning"); } else if (action === "Revoke") { active.revokeProject(); ctx.ui.notify("Project agents revoked for this session.", "info"); } continue; }
         if (choice === "Settings") {
           const settings = active.settingsForUI();
-          const options = [`maxConcurrent: ${settings.maxConcurrent}`, `joinMode: ${settings.joinMode}`, `groupTimeoutMs: ${settings.groupTimeoutMs}`, `allowCallerModelOverride: ${settings.allowCallerModelOverride}`, `defaultMaxTurns: ${settings.defaultMaxTurns}`, `graceTurns: ${settings.graceTurns}`, "Back"];
+          const options = [`maxConcurrent: ${settings.maxConcurrent}`, `joinMode: ${settings.joinMode}`, `groupTimeoutMs: ${settings.groupTimeoutMs}`, `allowCallerModelOverride: ${settings.allowCallerModelOverride}`, `runTimeoutMs: ${settings.runTimeoutMs}`, "Back"];
           const setting = await ctx.ui.select("Settings", options); if (!setting || setting === "Back") continue;
           const match = setting.match(/^(\w+):/); if (!match) continue; const name = match[1];
           let parsed: unknown;
           if (name === "allowCallerModelOverride") { const selected = await ctx.ui.select("Allow caller model override?", ["true", "false"]); if (!selected) continue; parsed = selected === "true"; }
-          else { const value = await ctx.ui.input(`New ${name}`, String(settings[name])); if (value === undefined) continue; parsed = name === "joinMode" ? value : Number(value); if (name === "joinMode" && parsed !== "async" && parsed !== "smart") { ctx.ui.notify("joinMode must be async or smart.", "error"); continue; } if (name !== "joinMode" && (!Number.isInteger(parsed) || (name !== "graceTurns" && (parsed as number) < 0))) { ctx.ui.notify("Enter a valid non-negative integer.", "error"); continue; } }
+          else { const value = await ctx.ui.input(`New ${name}`, String(settings[name])); if (value === undefined) continue; parsed = name === "joinMode" ? value : Number(value); if (name === "joinMode" && parsed !== "async" && parsed !== "smart") { ctx.ui.notify("joinMode must be async or smart.", "error"); continue; } if (name !== "joinMode" && (!Number.isInteger(parsed) || (parsed as number) < 0)) { ctx.ui.notify("Enter a valid non-negative integer.", "error"); continue; } }
           const scope = await ctx.ui.select("Persist setting", ["session", "project", "global", "Back"]); if (!scope || scope === "Back") continue;
           await active.saveSetting(name, parsed, scope as "global" | "project" | "session"); ctx.ui.notify(scope === "session" ? "Saved for this parent session." : "Saved for future runs.", "info"); continue;
         }
@@ -251,27 +260,43 @@ export default async function (pi: ExtensionAPI): Promise<void> {
               [{ text: "Status: ", role: "muted" }, { text: `${statusIcon(run.status)} ${run.status}`, role: statusColorRole(run.status) }],
               [{ text: "ID: ", role: "muted" }, { text: run.id, role: "dim" }],
               [{ text: "Model: ", role: "muted" }, { text: `${run.model} (${run.modelSource})`, role: "dim" }],
-              [{ text: "Thinking: ", role: "muted" }, { text: `${run.thinking}  •  Turns: ${run.turns}`, role: "dim" }],
+              [{ text: "Thinking: ", role: "muted" }, { text: `${run.thinking}  •  Prompts: ${run.prompts}`, role: "dim" }],
             ],
           })));
           const run = runs.find((candidate) => candidate.id === selected); if (!run) continue;
-          const action = await ctx.ui.select(`${run.agent}: ${run.status}`, ["View result", "Steer", "Stop", "Resume", "Remove", "Back"]); if (action === "View result") ctx.ui.notify(outputText(run, true).slice(0, 4000), "info"); if (action === "Steer") { const text = await ctx.ui.input("Steer instruction"); if (text) await active.steer(run.id, text); } if (action === "Stop") await active.stop(run.id); if (action === "Resume") { const prompt = await ctx.ui.input("Resume prompt", "Continue the task"); if (prompt) await active.resume(run.id, prompt); } if (action === "Remove") active.remove(run.id); continue;
+          const live = run.status === "queued" || run.status === "running" || run.status === "blocked";
+          const actions = live ? ["Focus", "Read", "Steer", "Stop", "Back"] : ["View result", "Resume", "Remove", "Back"];
+          const action = await ctx.ui.select(`${run.agent}: ${run.status}`, actions);
+          if (action === "View result") ctx.ui.notify(outputText(run, true).slice(0, 4000), "info");
+          if (action === "Focus") await active.focus(run.id);
+          if (action === "Read") ctx.ui.notify((await active.readLive(run.id)).slice(0, 4000), "info");
+          if (action === "Steer") { const text = await ctx.ui.input("Steer instruction"); if (text) await active.steer(run.id, text); }
+          if (action === "Stop") await active.stop(run.id);
+          if (action === "Resume") { const prompt = await ctx.ui.input("Resume prompt", "Continue the task"); if (prompt) await active.resume(run.id, prompt); }
+          if (action === "Remove") active.remove(run.id);
+          continue;
         }
         if (choice === "Agents") {
           const defs = active.definitionsForUI();
           const selected = await selectDetailed(ctx, "Agents", defs.map((def) => ({
             value: def.name,
             label: `${def.enabled ? "●" : "○"} ${def.displayName}`,
-            details: [
+            details: ([
               [{ text: def.description, role: "text" }],
               [{ text: "Source: ", role: "muted" }, { text: `${def.source}  •  `, role: "dim" }, { text: def.enabled ? "● enabled" : "○ disabled", role: def.enabled ? "success" : "muted" }],
-              [{ text: "Model: ", role: "muted" }, { text: def.effectiveModel ?? "inherit/default", role: "dim" }],
-              [{ text: "Model source: ", role: "muted" }, { text: def.effectiveModelSource ?? "unresolved", role: "dim" }],
-              [{ text: "Tools: ", role: "muted" }, { text: def.tools.join(", ") || "none", role: "dim" }],
-            ],
+              [{ text: "Kind: ", role: "muted" }, { text: def.kind, role: "dim" }],
+              ...(def.kind === "pi" ? [
+                [{ text: "Model: ", role: "muted" }, { text: def.effectiveModel ?? "inherit/default", role: "dim" }],
+                [{ text: "Model source: ", role: "muted" }, { text: def.effectiveModelSource ?? "unresolved", role: "dim" }],
+                [{ text: "Tools: ", role: "muted" }, { text: def.tools.join(", ") || "none", role: "dim" }],
+              ] : [[{ text: "Args: ", role: "muted" }, { text: def.args?.join(" ") || "none", role: "dim" }]]),
+            ] as ThemedLine[]),
           })));
           const def = defs.find((candidate) => candidate.name === selected); if (!def) continue;
-          const action = await ctx.ui.select(def.name, ["Configure model", "View definition", "Back"]); if (action === "View definition") ctx.ui.notify(`${def.description}\nSource: ${def.source}${def.filePath ? `\n${def.filePath}` : ""}\nEffective model: ${def.effectiveModel ?? "inherit/default"} (${def.effectiveModelSource ?? "unresolved"})\nTools: ${def.tools.join(", ")}`, "info"); if (action === "Configure model") { const available = ctx.modelRegistry.getAvailable(); const options = ["Inherit/default", ...available.map((m) => `${m.provider}/${m.id}`), "Back"]; const chosen = await ctx.ui.select(`Model for ${def.name}`, options); if (!chosen || chosen === "Back") continue; const modelScope = await ctx.ui.select("Persist model", ["session", "project", "global", "Back"]); if (!modelScope || modelScope === "Back") continue; await active.setModel(def.name, chosen === "Inherit/default" ? undefined : chosen, modelScope as "session" | "project" | "global"); ctx.ui.notify(modelScope === "session" ? "Saved for this parent session." : "Saved for future runs.", "info"); }
+          const actions = def.kind === "pi" ? ["Configure model", "View definition", "Back"] : ["View definition", "Back"];
+          const action = await ctx.ui.select(def.name, actions);
+          if (action === "View definition") ctx.ui.notify(`${def.description}\nSource: ${def.source}${def.filePath ? `\n${def.filePath}` : ""}\nKind: ${def.kind}\n${def.kind === "pi" ? `Effective model: ${def.effectiveModel ?? "inherit/default"} (${def.effectiveModelSource ?? "unresolved"})\nTools: ${def.tools.join(", ")}` : `Args: ${def.args?.join(" ") || "none"}`}`, "info");
+          if (action === "Configure model") { const available = ctx.modelRegistry.getAvailable(); const options = ["Inherit/default", ...available.map((m) => `${m.provider}/${m.id}`), "Back"]; const chosen = await ctx.ui.select(`Model for ${def.name}`, options); if (!chosen || chosen === "Back") continue; const modelScope = await ctx.ui.select("Persist model", ["session", "project", "global", "Back"]); if (!modelScope || modelScope === "Back") continue; await active.setModel(def.name, chosen === "Inherit/default" ? undefined : chosen, modelScope as "session" | "project" | "global"); ctx.ui.notify(modelScope === "session" ? "Saved for this parent session." : "Saved for future runs.", "info"); }
         }
       }
     } catch (error) { ctx.ui.notify(asError(error), "error"); }

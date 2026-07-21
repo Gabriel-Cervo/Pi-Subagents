@@ -1,7 +1,7 @@
 {
   "name": "@gabriel-cervo/pi-subagents",
   "version": "1.0.0",
-  "description": "Native in-process subagents for Pi",
+  "description": "Herdr-backed subagents for Pi",
   "type": "module",
   "license": "MIT",
   "keywords": ["pi-package", "pi", "subagents", "coding-agent"],

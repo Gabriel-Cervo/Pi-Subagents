@@ -50,6 +50,7 @@ export function defaultAgentDefinitions(): AgentDefinition[] {
   return BUILTIN_AGENT_CATALOG.map((agent) => ({
     ...agent,
     tools: [...agent.tools],
+    kind: "pi",
     enabled: true,
     source: "default" as const,
     legacyFields: [],

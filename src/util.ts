@@ -22,8 +22,29 @@ export function truncate(text: string, max = MAX_OUTPUT_BYTES): string {
   return `${prefix}${notice}`;
 }
 export function textOf(message: any): string {
-  if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return "";
-  return message.content.filter((x: any) => x.type === "text").map((x: any) => x.text).join("");
+  if (!message || !Array.isArray(message.content)) return "";
+  if (message.role !== "assistant" && message.role !== "user") return "";
+  return message.content.filter((x: any) => x?.type === "text" && typeof x.text === "string").map((x: any) => x.text).join("");
+}
+
+/** Convert parent context to readable Markdown, intentionally excluding images and tool plumbing. */
+export function readableContext(entries: unknown, maxBytes = MAX_OUTPUT_BYTES): string {
+  const lines: string[] = [];
+  const visit = (value: any): void => {
+    if (!value) return;
+    if (Array.isArray(value)) { for (const item of value) visit(item); return; }
+    if (typeof value !== "object") return;
+    const role = value.role;
+    const text = textOf(value);
+    if (text && (role === "user" || role === "assistant")) lines.push(`### ${role === "user" ? "User" : "Assistant"}\n${text}`);
+    // Session entries commonly wrap their message in `message`; recurse only through
+    // known conversational containers, never arbitrary tool input/output objects.
+    if (value.message) visit(value.message);
+    if (value.messages) visit(value.messages);
+    if (!role && value.content) visit({ role: "user", content: value.content });
+  };
+  visit(entries);
+  return truncate(lines.join("\n\n"), maxBytes);
 }
 export function safeJson(value: unknown): unknown {
   return JSON.parse(JSON.stringify(value));

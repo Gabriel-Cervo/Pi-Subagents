@@ -1,5 +1,6 @@
 import { test, expect } from "vitest";
-import { agentSchema, resultSchema, steerSchema } from "../src/manager.ts";
+import { agentSchema, resultSchema, steerSchema, buildAgentArgs, validateKindOverrides, validateResumeStatus } from "../src/manager.ts";
+import type { AgentDefinition } from "../src/types.ts";
 import { BUILTIN_AGENT_CATALOG } from "../src/builtins.ts";
 import { AGENT_TOOL_DESCRIPTION, AGENT_TOOL_PROMPT_GUIDELINES, AGENT_TOOL_PROMPT_SNIPPET } from "../src/agent-tool-metadata.ts";
 
@@ -11,6 +12,24 @@ test("public tool schemas use the required names and fields", () => {
   expect(resultSchema.properties.verbose).toBeDefined();
   expect(steerSchema.properties.agent_id).toBeDefined();
   expect(steerSchema.properties.message).toBeDefined();
+});
+
+test("kind overrides ignore definition args while default kinds retain them", () => {
+  const definition = { name: "x", description: "x", displayName: "x", tools: ["read"], enabled: true, prompt: "x", source: "global", legacyFields: [], kind: "claude", args: ["--flag"] } as AgentDefinition;
+  expect(buildAgentArgs(definition, "claude", "provider/model", "medium", "system", false)).toEqual(["--flag"]);
+  expect(buildAgentArgs(definition, "pi", "provider/model", "medium", "system", true)).not.toContain("--flag");
+});
+
+test("non-Pi kinds reject model and thinking overrides", () => {
+  expect(() => validateKindOverrides("claude", { model: "provider/model" })).toThrow(/only valid for Pi/);
+  expect(() => validateKindOverrides("codex", { thinking: "high" })).toThrow(/only valid for Pi/);
+  expect(() => validateKindOverrides("pi", { model: "provider/model", thinking: "high" })).not.toThrow();
+});
+
+test("blocked and live runs cannot be resumed", () => {
+  expect(() => validateResumeStatus("blocked")).toThrow(/cannot be resumed/);
+  expect(() => validateResumeStatus("running")).toThrow(/cannot be resumed/);
+  expect(() => validateResumeStatus("completed")).not.toThrow();
 });
 
 test("Agent tool metadata describes every built-in and its dispatch role", () => {
