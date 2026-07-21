@@ -38,7 +38,11 @@ const terminal = (status: RunResult["status"]) => status === "completed" || stat
 
 /** Build the exact pi argv used by Herdr's `agent start -- ...` boundary. */
 export function buildPiArgs(definition: AgentDefinition, model: string, thinking: ThinkingLevel, systemPrompt: string, includeDefinitionArgs = true): string[] {
-  return ["--model", model, "--thinking", thinking, "--tools", definition.tools.join(","), "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--no-session", "--system-prompt", systemPrompt, ...(includeDefinitionArgs ? (definition.args ?? []) : [])];
+  // --print forces print mode (non-TUI) so all output goes to stdout. Without it,
+  // the pseudo-TTY Herdr provides triggers interactive TUI mode, which paints to
+  // the terminal's alternate screen. Markers on the alt-screen are invisible to
+  // herdr.read, breaking result capture for Explore/Plan and any verbose agent.
+  return ["--print", "--model", model, "--thinking", thinking, "--tools", definition.tools.join(","), "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--no-session", "--system-prompt", systemPrompt, ...(includeDefinitionArgs ? (definition.args ?? []) : [])];
 }
 export function buildAgentArgs(definition: AgentDefinition, kind: HerdrKind, model: string, thinking: ThinkingLevel, systemPrompt: string, overridden: boolean): string[] {
   if (kind === "pi") return buildPiArgs(definition, model, thinking, systemPrompt, !overridden);
@@ -194,24 +198,44 @@ export class SubagentManager {
     await this.closeOwned(record);
   }
   private async readResult(record: RecordState, marker: string): Promise<string> {
-    const output = record.agentTarget ? await this.herdr.read(record.agentTarget) : "";
-    const start = output.indexOf(marker); const end = output.indexOf(`${marker}/`, start + marker.length);
-    if (start >= 0 && end > start) return truncate(output.slice(start + marker.length, end).trim());
-    let tempDir: string | undefined;
-    try {
-      tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
-      const file = path.join(tempDir, `${record.id}.md`);
-      if (!record.agentTarget) throw new Error("No Herdr agent target is available for result capture.");
-      record.prompts++;
-      await this.herdr.prompt(record.agentTarget, `Your response markers were incomplete. Write the complete final Markdown response to ${file} using the write tool, then reply with only ${file}.`, { wait: true, timeout: 120000 });
-      const captured = truncate(await fs.readFile(file, "utf8"));
-      if (!captured.trim()) throw new Error("The fallback result file was empty.");
-      return captured;
-    } catch (error) {
-      record.partialOutput = truncate(output);
-      record.diagnostics = truncate(`Result capture failed: ${error instanceof Error ? error.message : String(error)}\n\nRaw terminal output:\n${output}`, 12000);
-      throw new Error("Unable to capture the subagent result.", { cause: error });
-    } finally { if (tempDir) await fs.rm(tempDir, { recursive: true, force: true }); }
+    // Try with increasing line counts to find markers. Some agents produce verbose
+    // output that exceeds the default read window, so we escalate before falling back.
+    let output = "";
+    for (const lines of [300, 1000, 3000]) {
+      output = record.agentTarget ? await this.herdr.read(record.agentTarget, lines) : "";
+      const start = output.indexOf(marker);
+      const end = output.indexOf(`${marker}/`, start + marker.length);
+      if (start >= 0 && end > start) return truncate(output.slice(start + marker.length, end).trim());
+    }
+
+    // Markers not found even with a large line window. Try a file-based fallback
+    // using bash (all fully-tooled agents have bash; read-only agents like Explore
+    // and Plan don't, so we accept partial output for them).
+    const hasBash = record.definition.tools.includes("bash");
+    const hasWrite = record.definition.tools.includes("write");
+    if (hasBash || hasWrite) {
+      let tempDir: string | undefined;
+      try {
+        tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
+        const file = path.join(tempDir, `${record.id}.md`);
+        if (!record.agentTarget) throw new Error("No Herdr agent target is available for result capture.");
+        record.prompts++;
+        const tool = hasWrite ? "write tool" : "bash";
+        await this.herdr.prompt(record.agentTarget, `Your response markers were incomplete. Write the complete final Markdown response to ${file} using the ${tool}, then reply with only ${file}.`, { wait: true, timeout: 120000 });
+        const captured = truncate(await fs.readFile(file, "utf8"));
+        if (!captured.trim()) throw new Error("The fallback result file was empty.");
+        return captured;
+      } catch (error) {
+        record.partialOutput = truncate(output);
+        record.diagnostics = truncate(`Result capture failed: ${error instanceof Error ? error.message : String(error)}\n\nRaw terminal output:\n${output}`, 12000);
+        throw new Error("Unable to capture the subagent result.", { cause: error });
+      } finally { if (tempDir) await fs.rm(tempDir, { recursive: true, force: true }); }
+    }
+
+    // Read-only agent (no bash, no write — Explore, Plan): accept whatever output
+    // we have as the best-effort result.
+    record.partialOutput = truncate(output);
+    return truncate(output || "(no output captured from subagent)");
   }
   private async monitorBlocked(record: RecordState): Promise<void> {
     if (record.settled || !record.agentTarget || record.controller.signal.aborted) return;
