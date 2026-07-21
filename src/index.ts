@@ -1,5 +1,7 @@
-import { Container, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
-import { DynamicBorder, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { access, mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { Container, type SelectItem, SelectList, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
+import { CONFIG_DIR_NAME, DynamicBorder, type ExtensionAPI, type ExtensionContext, getAgentDir, getSettingsListTheme, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { SubagentManager, agentSchema, resultSchema, steerSchema } from "./manager.ts";
 import type { AgentRequest, RunResult } from "./types.ts";
 
@@ -63,6 +65,92 @@ async function selectDetailed(ctx: ExtensionContext, title: string, choices: Det
   });
 }
 
+const AGENT_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+
+async function selectAgentTools(ctx: ExtensionContext): Promise<string[] | undefined> {
+  const selected = new Set<string>(AGENT_TOOLS);
+  await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+    const container = new Container();
+    container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+    container.addChild(new Text(theme.fg("accent", theme.bold("Select agent tools")), 1, 0));
+    container.addChild(new Text(theme.fg("dim", "Change values with ←/→ or Enter. Press Esc when finished."), 1, 0));
+    const items: SettingItem[] = AGENT_TOOLS.map((tool) => ({ id: tool, label: tool, currentValue: "enabled", values: ["enabled", "disabled"] }));
+    const list = new SettingsList(items, items.length + 1, getSettingsListTheme(), (id, value) => {
+      if (value === "enabled") selected.add(id); else selected.delete(id);
+    }, () => done(undefined));
+    container.addChild(list);
+    container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+    return {
+      render: (width: number) => container.render(width),
+      invalidate: () => container.invalidate(),
+      handleInput: (data: string) => { list.handleInput?.(data); tui.requestRender(); },
+    };
+  });
+  if (selected.size === 0) {
+    const keep = await ctx.ui.confirm("Create tool-less agent?", "No tools are selected. The agent will only be able to respond with text.");
+    if (!keep) return undefined;
+  }
+  return [...selected];
+}
+
+function yamlString(value: string): string { return JSON.stringify(value); }
+
+async function createAgent(ctx: ExtensionContext, manager: SubagentManager): Promise<void> {
+  const name = (await ctx.ui.input("Agent name", "e.g. reviewer"))?.trim();
+  if (!name) return;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+    throw new Error("Agent names must be 1–64 characters and use only letters, numbers, dots, underscores, or hyphens.");
+  }
+
+  const description = (await ctx.ui.input("Short description", "What this agent does"))?.trim();
+  if (!description) return;
+  const functionality = (await ctx.ui.editor("Agent functionality and instructions", `You are ${name}.\n\nDescribe the work you should perform, constraints to follow, and the output you should return.`))?.trim();
+  if (!functionality) return;
+
+  const tools = await selectAgentTools(ctx);
+  if (!tools) return;
+  const availableModels = ctx.modelRegistry.getAvailable();
+  const model = await ctx.ui.select("Agent model", ["Inherit parent model", ...availableModels.map((item) => `${item.provider}/${item.id}`)]);
+  if (!model) return;
+
+  const source = await ctx.ui.select("Agent source", ["Project (.pi/agents)", "Global (~/.pi/agent/agents)"]);
+  if (!source) return;
+  const isProject = source.startsWith("Project");
+  if (isProject && !ctx.isProjectTrusted()) throw new Error("Creating a project agent requires a trusted project.");
+
+  const existing = manager.definitionsForUI().find((agent) => agent.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+  const selectedSource = isProject ? "project" : "global";
+  const defaultPath = join(isProject ? join(ctx.cwd, CONFIG_DIR_NAME, "agents") : join(getAgentDir(), "agents"), `${name}.md`);
+  const filePath = existing?.source === selectedSource && existing.filePath ? existing.filePath : defaultPath;
+  let fileExists = false;
+  try { await access(filePath); fileExists = true; } catch { /* new file */ }
+  if (existing || fileExists) {
+    const action = existing?.source === selectedSource ? "replace" : "override";
+    const confirmed = await ctx.ui.confirm(`${action === "replace" ? "Replace" : "Override"} agent?`, `An agent named “${existing?.name ?? name}” already exists from ${existing?.source ?? selectedSource}. Create this ${selectedSource} definition?`);
+    if (!confirmed) return;
+  }
+
+  const frontmatter = [
+    "---",
+    `name: ${yamlString(name)}`,
+    `description: ${yamlString(description)}`,
+    `tools: ${yamlString(tools.join(", "))}`,
+    ...(model === "Inherit parent model" ? [] : [`model: ${yamlString(model)}`]),
+    "enabled: true",
+    "---",
+    "",
+    functionality,
+    "",
+  ].join("\n");
+
+  await withFileMutationQueue(filePath, async () => {
+    await mkdir(dirname(filePath), { recursive: true });
+    await writeFile(filePath, frontmatter, { encoding: "utf8", mode: 0o600 });
+  });
+  await manager.reload();
+  ctx.ui.notify(`Created ${selectedSource} agent “${name}” at ${filePath}.`, "info");
+}
+
 export default async function (pi: ExtensionAPI): Promise<void> {
   let manager: SubagentManager | undefined;
   pi.on("session_start", async (_event, ctx) => { manager?.cleanup(); manager = new SubagentManager(pi, ctx); await manager.start(); });
@@ -102,9 +190,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     const active = manager; if (!active) return;
     try {
       while (true) {
-        const choice = await ctx.ui.select("Subagents", ["Active/recent runs", "Agent types", "Settings", "Approve/revoke project agents", "Reload definitions", "Close"]);
+        const choice = await ctx.ui.select("Subagents", ["Active/recent runs", "Agents", "Create new agent", "Settings", "Approve/revoke project agents", "Reload definitions", "Close"]);
         if (!choice || choice === "Close") return;
         if (choice === "Reload definitions") { await active.reload(); ctx.ui.notify("Agent definitions reloaded.", "info"); continue; }
+        if (choice === "Create new agent") { await createAgent(ctx, active); continue; }
         if (choice === "Approve/revoke project agents") { const action = await ctx.ui.select("Project agents", ["Approve", "Revoke", "Back"]); if (action === "Approve") { const approved = await active.approveProject(); ctx.ui.notify(approved ? "Project agents approved for this session." : "Project agents not approved.", approved ? "info" : "warning"); } else if (action === "Revoke") { active.revokeProject(); ctx.ui.notify("Project agents revoked for this session.", "info"); } continue; }
         if (choice === "Settings") {
           const settings = active.settingsForUI();
@@ -132,9 +221,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           const run = runs.find((candidate) => candidate.id === selected); if (!run) continue;
           const action = await ctx.ui.select(`${run.agent}: ${run.status}`, ["View result", "Steer", "Stop", "Resume", "Remove", "Back"]); if (action === "View result") ctx.ui.notify(outputText(run, true).slice(0, 4000), "info"); if (action === "Steer") { const text = await ctx.ui.input("Steer instruction"); if (text) await active.steer(run.id, text); } if (action === "Stop") await active.stop(run.id); if (action === "Resume") { const prompt = await ctx.ui.input("Resume prompt", "Continue the task"); if (prompt) await active.resume(run.id, prompt); } if (action === "Remove") active.remove(run.id); continue;
         }
-        if (choice === "Agent types") {
+        if (choice === "Agents") {
           const defs = active.definitionsForUI();
-          const selected = await selectDetailed(ctx, "Agent types", defs.map((def) => ({
+          const selected = await selectDetailed(ctx, "Agents", defs.map((def) => ({
             value: def.name,
             label: `${def.enabled ? "●" : "○"} ${def.displayName}`,
             details: [

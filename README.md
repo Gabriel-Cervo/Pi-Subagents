@@ -47,10 +47,13 @@ Then call `get_subagent_result` with the returned `agent_id` (optionally `wait` 
 Run `/agents` to manage:
 
 - Active and recent runs. View, steer, or stop them.
-- Agent definitions, source, enabled state, effective model, and tools.
+- Agents, their source, enabled state, effective model, and tools.
+- Create a new agent through a guided wizard: name, description, functionality/instructions, tool selection, model, and project/global source.
 - Per-agent model selection.
 - Project-agent approval and revocation.
 - Definition reloads.
+
+Agents created from the menu are written immediately to `.pi/agents/<name>.md` for project scope or `~/.pi/agent/agents/<name>.md` for global scope, then dynamically reloaded. Choosing `Inherit parent model` omits the model pin so future runs follow the current parent model.
 
 The model picker includes `Inherit/default` and authenticated models known by Pi's registry. Changes affect future runs. A resumed run keeps its original model and thinking configuration.
 
