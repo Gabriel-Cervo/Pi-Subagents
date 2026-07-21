@@ -1,5 +1,5 @@
-import { Text } from "@earendil-works/pi-tui";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Container, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
+import { DynamicBorder, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SubagentManager, agentSchema, resultSchema, steerSchema } from "./manager.ts";
 import type { AgentRequest, RunResult } from "./types.ts";
 
@@ -12,6 +12,55 @@ function requireManager(manager: SubagentManager | undefined): SubagentManager {
 function failedRunMessage(result: RunResult): string {
   const partial = result.output || result.partialOutput;
   return `${result.error || `Subagent ${result.status}.`}${partial ? `\n\nPartial output:\n${partial}` : ""}`;
+}
+
+interface DetailedChoice {
+  value: string;
+  label: string;
+  details: string[];
+}
+
+async function selectDetailed(ctx: ExtensionContext, title: string, choices: DetailedChoice[]): Promise<string | undefined> {
+  if (choices.length === 0) {
+    ctx.ui.notify(`No ${title.toLocaleLowerCase()} available.`, "info");
+    return undefined;
+  }
+
+  return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
+    const container = new Container();
+    container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+    container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
+
+    const items: SelectItem[] = choices.map(({ value, label }) => ({ value, label }));
+    const list = new SelectList(items, Math.min(items.length, 10), {
+      selectedPrefix: (text) => theme.fg("accent", text),
+      selectedText: (text) => theme.fg("accent", text),
+      description: (text) => theme.fg("muted", text),
+      scrollInfo: (text) => theme.fg("dim", text),
+      noMatch: (text) => theme.fg("warning", text),
+    }, { minPrimaryColumnWidth: 20, maxPrimaryColumnWidth: 48 });
+    container.addChild(list);
+
+    const details = new Text("", 1, 1);
+    const showDetails = (value: string) => {
+      const choice = choices.find((candidate) => candidate.value === value);
+      details.setText(choice ? choice.details.map((line) => theme.fg("muted", line)).join("\n") : "");
+    };
+    showDetails(choices[0].value);
+    container.addChild(details);
+    container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc back"), 1, 0));
+    container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+
+    list.onSelectionChange = (item) => { showDetails(item.value); tui.requestRender(); };
+    list.onSelect = (item) => done(item.value);
+    list.onCancel = () => done(undefined);
+
+    return {
+      render: (width: number) => container.render(width),
+      invalidate: () => container.invalidate(),
+      handleInput: (data: string) => { list.handleInput(data); tui.requestRender(); },
+    };
+  });
 }
 
 export default async function (pi: ExtensionAPI): Promise<void> {
@@ -69,11 +118,34 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           await active.saveSetting(name, parsed, scope as "global" | "project" | "session"); ctx.ui.notify(scope === "session" ? "Saved for this parent session." : "Saved for future runs.", "info"); continue;
         }
         if (choice === "Active/recent runs") {
-          const runs = active.list(); const selected = await ctx.ui.select("Runs", [...runs.map((r) => `${r.id} — ${r.agent} — ${r.status} — ${r.model} (${r.modelSource})`), "Back"]); const run = runs.find((r) => selected?.startsWith(r.id)); if (!run) continue;
+          const runs = active.list();
+          const selected = await selectDetailed(ctx, "Active and recent runs", runs.map((run) => ({
+            value: run.id,
+            label: `${run.status === "running" ? "◉" : run.status === "completed" ? "✓" : run.status === "queued" ? "○" : "✗"} ${run.agent} — ${run.status}`,
+            details: [
+              run.description,
+              `ID: ${run.id}`,
+              `Model: ${run.model} (${run.modelSource})`,
+              `Thinking: ${run.thinking}  •  Turns: ${run.turns}`,
+            ],
+          })));
+          const run = runs.find((candidate) => candidate.id === selected); if (!run) continue;
           const action = await ctx.ui.select(`${run.agent}: ${run.status}`, ["View result", "Steer", "Stop", "Resume", "Remove", "Back"]); if (action === "View result") ctx.ui.notify(outputText(run, true).slice(0, 4000), "info"); if (action === "Steer") { const text = await ctx.ui.input("Steer instruction"); if (text) await active.steer(run.id, text); } if (action === "Stop") await active.stop(run.id); if (action === "Resume") { const prompt = await ctx.ui.input("Resume prompt", "Continue the task"); if (prompt) await active.resume(run.id, prompt); } if (action === "Remove") active.remove(run.id); continue;
         }
         if (choice === "Agent types") {
-          const defs = active.definitionsForUI(); const selected = await ctx.ui.select("Agent types", [...defs.map((d) => `${d.name} — ${d.source} — ${d.enabled ? "enabled" : "disabled"} — model ${d.effectiveModel ?? "inherit/default"} (${d.effectiveModelSource ?? "unresolved"})`), "Back"]); const def = defs.find((d) => selected?.startsWith(`${d.name} —`)); if (!def) continue;
+          const defs = active.definitionsForUI();
+          const selected = await selectDetailed(ctx, "Agent types", defs.map((def) => ({
+            value: def.name,
+            label: `${def.enabled ? "●" : "○"} ${def.displayName}`,
+            details: [
+              def.description,
+              `Source: ${def.source}  •  Status: ${def.enabled ? "enabled" : "disabled"}`,
+              `Model: ${def.effectiveModel ?? "inherit/default"}`,
+              `Model source: ${def.effectiveModelSource ?? "unresolved"}`,
+              `Tools: ${def.tools.join(", ") || "none"}`,
+            ],
+          })));
+          const def = defs.find((candidate) => candidate.name === selected); if (!def) continue;
           const action = await ctx.ui.select(def.name, ["Configure model", "View definition", "Back"]); if (action === "View definition") ctx.ui.notify(`${def.description}\nSource: ${def.source}${def.filePath ? `\n${def.filePath}` : ""}\nEffective model: ${def.effectiveModel ?? "inherit/default"} (${def.effectiveModelSource ?? "unresolved"})\nTools: ${def.tools.join(", ")}`, "info"); if (action === "Configure model") { const available = ctx.modelRegistry.getAvailable(); const options = ["Inherit/default", ...available.map((m) => `${m.provider}/${m.id}`), "Back"]; const chosen = await ctx.ui.select(`Model for ${def.name}`, options); if (!chosen || chosen === "Back") continue; const modelScope = await ctx.ui.select("Persist model", ["session", "project", "global", "Back"]); if (!modelScope || modelScope === "Back") continue; await active.setModel(def.name, chosen === "Inherit/default" ? undefined : chosen, modelScope as "session" | "project" | "global"); ctx.ui.notify(modelScope === "session" ? "Saved for this parent session." : "Saved for future runs.", "info"); }
         }
       }
