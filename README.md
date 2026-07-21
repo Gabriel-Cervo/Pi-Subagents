@@ -75,7 +75,7 @@ name: reviewer
 display_name: Reviewer
 description: Reviews focused changes for correctness and tests.
 tools: read, grep, find, ls, bash
-model: anthropic/claude-sonnet-4-20250514
+model: openai-codex/gpt-5.6-luna
 thinking: medium
 max_turns: 8
 enabled: true
@@ -121,7 +121,9 @@ Settings are versioned JSON. Global settings are stored at `~/.pi/agent/subagent
   "defaultMaxTurns": 12,
   "graceTurns": 2,
   "agentModels": {
-    "Explore": "anthropic/claude-haiku-4-5"
+    "Explore": "openai-codex/gpt-5.6-luna",
+    "Plan": "openai-codex/gpt-5.6-sol",
+    "implementer": "openai-codex/gpt-5.6-luna"
   }
 }
 ```
