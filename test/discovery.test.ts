@@ -27,6 +27,15 @@ test("legacy fields warn once", async () => {
   expect(first.warnings.some((warning) => warning.includes("color"))).toBe(true); expect(second.warnings).toEqual([]);
 });
 
+test("warns about unsupported tools without silently claiming they are enabled", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "herdr-subagents-")); await mkdir(path.join(root, ".pi", "agents"), { recursive: true });
+  await writeFile(path.join(root, ".pi", "agents", "custom.md"), `---\ndescription: custom\ntools: read, teleport\n---\ncustom`);
+  const found = discoverAgents(root, true, new Set());
+  const custom = found.agents.find((item) => item.name === "custom");
+  expect(custom?.tools).toEqual(["read"]);
+  expect(found.warnings.some((warning) => warning.includes("teleport"))).toBe(true);
+});
+
 test("lookups are case-insensitive and collisions warn deterministically", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "herdr-subagents-")); await mkdir(path.join(root, ".pi", "agents"), { recursive: true });
   await writeFile(path.join(root, ".pi", "agents", "a.md"), `---\nname: REVIEWER\ndescription: first\n---\nfirst`);

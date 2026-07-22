@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { agentSchema, resultSchema, steerSchema, buildAgentArgs, buildPiArgs, validateKindOverrides, validateResumeStatus } from "../src/manager.ts";
+import { agentSchema, resultSchema, steerSchema, buildAgentArgs, buildPiArgs, validateKindOverrides, validatePiDefinitionArgs, validateResumeStatus } from "../src/manager.ts";
 import type { AgentDefinition } from "../src/types.ts";
 import { BUILTIN_AGENT_CATALOG, defaultAgentDefinitions } from "../src/builtins.ts";
 import { AGENT_TOOL_DESCRIPTION, AGENT_TOOL_PROMPT_GUIDELINES, AGENT_TOOL_PROMPT_SNIPPET } from "../src/agent-tool-metadata.ts";
@@ -28,6 +28,16 @@ test("Pi agents stay interactive for Herdr prompt and wait", () => {
   expect(args).toContain("--system-prompt");
 });
 
+test("Pi definition args cannot override managed safety flags", () => {
+  const definition = { name: "x", description: "x", displayName: "x", tools: ["read"], enabled: true, prompt: "x", source: "default", legacyFields: [], kind: "pi" } as AgentDefinition;
+  expect(() => validatePiDefinitionArgs(["--tools", "bash"])).toThrow(/--tools/);
+  expect(() => validatePiDefinitionArgs(["--extension", "./unsafe.ts"])).toThrow(/--extension/);
+  expect(() => validatePiDefinitionArgs(["--session", "session.json"])).toThrow(/--session/);
+  expect(() => validatePiDefinitionArgs(["--append-system-prompt", "override"])).toThrow(/--append-system-prompt/);
+  expect(() => buildPiArgs({ ...definition, args: ["--no-approve=false"] }, "provider/model", "medium", "system")).toThrow(/--no-approve/);
+  expect(buildPiArgs({ ...definition, args: ["--verbose"] }, "provider/model", "medium", "system")).toContain("--verbose");
+});
+
 test("default catalog exposes five distinct, prompted roles with least-privilege tools", () => {
   const names = BUILTIN_AGENT_CATALOG.map((agent) => agent.name.toLocaleLowerCase());
   expect(names).toEqual(["general-purpose", "explore", "plan", "implementer", "reviewer"]);
@@ -44,6 +54,7 @@ test("default catalog exposes five distinct, prompted roles with least-privilege
     if (readOnly.has(agent.name.toLocaleLowerCase())) {
       expect(agent.tools).not.toContain("edit");
       expect(agent.tools).not.toContain("write");
+      expect(agent.tools).not.toContain("bash");
     }
   }
 });

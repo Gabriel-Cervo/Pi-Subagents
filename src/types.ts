@@ -32,6 +32,7 @@ export interface AgentDefinition {
 export interface Settings {
   version: 2;
   maxConcurrent: number;
+  maxHistory: number;
   joinMode: JoinMode;
   groupTimeoutMs: number;
   allowCallerModelOverride: boolean;
@@ -42,6 +43,7 @@ export interface Settings {
 
 export interface SessionOverrides {
   maxConcurrent?: number;
+  maxHistory?: number;
   joinMode?: JoinMode;
   groupTimeoutMs?: number;
   allowCallerModelOverride?: boolean;

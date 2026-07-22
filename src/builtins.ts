@@ -2,7 +2,7 @@ import type { AgentDefinition, BuiltinTool, ThinkingLevel } from "./types.ts";
 import { BUILTIN_TOOLS } from "./types.ts";
 
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const satisfies readonly BuiltinTool[];
-const INSPECTION_TOOLS = ["read", "bash", "grep", "find", "ls"] as const satisfies readonly BuiltinTool[];
+const INSPECTION_TOOLS = ["read", "grep", "find", "ls"] as const satisfies readonly BuiltinTool[];
 
 export interface BuiltinAgentCatalogEntry {
   name: string;
@@ -70,7 +70,7 @@ export const BUILTIN_AGENT_CATALOG = [
     description: "Read-only review for correctness, maintainability, and regressions.",
     tools: INSPECTION_TOOLS,
     thinking: "high",
-    prompt: "Review the requested change without modifying files. Inspect the diff and surrounding code, run safe focused checks when useful, and prioritize actionable findings by severity. For each finding include the file, location, impact, and a concrete fix. If there are no findings, say what was checked and note residual risk.",
+    prompt: "Review the requested change without modifying files. Inspect the diff and surrounding code using the available read-only tools, and prioritize actionable findings by severity. For each finding include the file, location, impact, and a concrete fix. If there are no findings, say what was checked and note residual risk.",
     dispatchGuidance: "Use after implementation for an independent correctness and regression review.",
   },
 ] as const satisfies readonly BuiltinAgentCatalogEntry[];

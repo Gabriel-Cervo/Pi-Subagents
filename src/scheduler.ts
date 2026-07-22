@@ -71,14 +71,16 @@ export class SmartJoinCoordinator {
   private ended = false;
   private timedOut = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private disposed = false;
   constructor(private readonly timeoutMs: number, private readonly emit: (notification: JoinNotification) => void) {}
-  add(id: string): void { this.runs.add(id); this.maybeStartTimer(); }
-  end(): void { this.ended = true; this.flushSolo(); this.maybeStartTimer(); this.flushAll(); }
-  complete(id: string): void { if (!this.runs.has(id)) this.runs.add(id); this.completed.add(id); if (this.timedOut) { this.delivered.add(id); this.emit({ type: "individual", ids: [id] }); return; } this.flushSolo(); this.maybeStartTimer(); this.flushAll(); }
-  private maybeStartTimer(): void { if (this.runs.size >= 2 && this.completed.size && !this.timer && !this.timedOut) this.timer = setTimeout(() => { this.timer = undefined; this.timedOut = true; this.emitBatch(); }, Math.max(0, this.timeoutMs)); }
-  private flushSolo(): void { if (this.runs.size === 1 && this.ended) for (const id of this.completed) if (!this.delivered.has(id)) { this.delivered.add(id); this.emit({ type: "individual", ids: [id] }); } }
-  private flushAll(): void { if (!this.timedOut && this.runs.size >= 2 && this.runs.size === this.completed.size) { if (this.timer) clearTimeout(this.timer); this.timer = undefined; this.emitBatch(); } }
-  private emitBatch(): void { const ids = [...this.completed].filter((id) => !this.delivered.has(id)); if (!ids.length) return; ids.forEach((id) => this.delivered.add(id)); this.emit({ type: "batch", ids }); }
+  add(id: string): void { if (this.disposed) return; this.runs.add(id); this.maybeStartTimer(); }
+  end(): void { if (this.disposed) return; this.ended = true; this.flushSolo(); this.maybeStartTimer(); this.flushAll(); }
+  complete(id: string): void { if (this.disposed) return; if (!this.runs.has(id)) this.runs.add(id); this.completed.add(id); if (this.timedOut) { this.delivered.add(id); this.emit({ type: "individual", ids: [id] }); return; } this.flushSolo(); this.maybeStartTimer(); this.flushAll(); }
+  dispose(): void { this.disposed = true; if (this.timer) clearTimeout(this.timer); this.timer = undefined; }
+  private maybeStartTimer(): void { if (!this.disposed && this.runs.size >= 2 && this.completed.size && !this.timer && !this.timedOut) this.timer = setTimeout(() => { this.timer = undefined; this.timedOut = true; this.emitBatch(); }, Math.max(0, this.timeoutMs)); }
+  private flushSolo(): void { if (!this.disposed && this.runs.size === 1 && this.ended) for (const id of this.completed) if (!this.delivered.has(id)) { this.delivered.add(id); this.emit({ type: "individual", ids: [id] }); } }
+  private flushAll(): void { if (!this.disposed && !this.timedOut && this.runs.size >= 2 && this.runs.size === this.completed.size) { if (this.timer) clearTimeout(this.timer); this.timer = undefined; this.emitBatch(); } }
+  private emitBatch(): void { if (this.disposed) return; const ids = [...this.completed].filter((id) => !this.delivered.has(id)); if (!ids.length) return; ids.forEach((id) => this.delivered.add(id)); this.emit({ type: "batch", ids }); }
 }
 
 export interface JoinBatch { id: string; runIds: string[]; ended: boolean; }

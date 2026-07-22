@@ -12,7 +12,7 @@ function nearestAgents(cwd: string): string | undefined {
   let current = path.resolve(cwd);
   while (true) {
     const candidate = path.join(current, ".pi", "agents");
-    if (existsSync(candidate) && statSync(candidate).isDirectory()) return candidate;
+    try { if (statSync(candidate).isDirectory()) return candidate; } catch { /* the directory may disappear during discovery */ }
     const parent = path.dirname(current);
     if (parent === current) return undefined;
     current = parent;
@@ -22,7 +22,9 @@ function warnOnce(warnings: string[], warned: Set<string>, value: string): void 
 function list(dir: string, source: AgentSource, project: boolean, warnings: string[], warned: Set<string>): AgentDefinition[] {
   if (!existsSync(dir)) return [];
   const result: AgentDefinition[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+  let entries: Array<{ name: string; isFile(): boolean }>;
+  try { entries = readdirSync(dir, { withFileTypes: true }) as unknown as Array<{ name: string; isFile(): boolean }>; } catch (error) { warnOnce(warnings, warned, `Unable to read agent directory ${dir}: ${error instanceof Error ? error.message : String(error)}`); return []; }
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
     const filePath = path.join(dir, entry.name);
     try {
@@ -32,7 +34,8 @@ function list(dir: string, source: AgentSource, project: boolean, warnings: stri
       if (!description) { warnOnce(warnings, warned, `Ignoring ${filePath}: frontmatter.description must be a non-empty string.`); continue; }
       const rawTools = Array.isArray(frontmatter.tools) ? frontmatter.tools : typeof frontmatter.tools === "string" ? frontmatter.tools.split(/[ ,]+/) : [...BUILTIN_TOOLS];
       const tools = rawTools.filter((tool): tool is BuiltinTool => typeof tool === "string" && (BUILTIN_TOOLS as readonly string[]).includes(tool));
-      if (frontmatter.tools !== undefined && !tools.length) warnOnce(warnings, warned, `Ignoring invalid tools in ${filePath}; no built-in tools were enabled.`);
+      const invalidTools = rawTools.filter((tool) => typeof tool !== "string" || !(BUILTIN_TOOLS as readonly string[]).includes(tool));
+      if (invalidTools.length) warnOnce(warnings, warned, `Ignoring unsupported tool names in ${filePath}: ${invalidTools.map(String).join(", ")}.`);
       const thinking = frontmatter.thinking === undefined ? undefined : String(frontmatter.thinking);
       if (thinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(thinking)) { warnOnce(warnings, warned, `Ignoring ${filePath}: thinking must be one of ${THINKING_LEVELS.join(", ")}.`); continue; }
       const kind = frontmatter.kind === undefined ? "pi" : String(frontmatter.kind).trim().toLowerCase();
@@ -48,7 +51,7 @@ function list(dir: string, source: AgentSource, project: boolean, warnings: stri
       if (frontmatter.model !== undefined && !model) { warnOnce(warnings, warned, `Ignoring ${filePath}: model must be a non-empty string.`); continue; }
       const legacyFields = Object.keys(frontmatter).filter((field) => LEGACY.has(field));
       for (const field of legacyFields) warnOnce(warnings, warned, `Unsupported legacy agent field '${field}' in ${filePath}`);
-      result.push({ name, displayName: typeof frontmatter.display_name === "string" ? frontmatter.display_name : name, description, tools, model, thinking: thinking as ThinkingLevel | undefined, kind: kind as HerdrKind, args, enabled, prompt: body.trim(), source, project, filePath, legacyFields });
+      result.push({ name, displayName: typeof frontmatter.display_name === "string" && frontmatter.display_name.trim() ? frontmatter.display_name.trim() : name, description, tools, model, thinking: thinking as ThinkingLevel | undefined, kind: kind as HerdrKind, args, enabled, prompt: body.trim(), source, project, filePath, legacyFields });
     } catch (error) { warnOnce(warnings, warned, `Ignoring malformed agent definition ${filePath}: ${error instanceof Error ? error.message : String(error)}`); }
   }
   return result;

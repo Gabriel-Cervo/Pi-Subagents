@@ -2,7 +2,7 @@ import { test, expect } from "vitest";
 import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadSettings } from "../src/settings.ts";
+import { loadSettings, validateSettingValue } from "../src/settings.ts";
 
 test("migrates v1 turn settings to v2 timeout settings", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "herdr-subagents-"));
@@ -13,6 +13,17 @@ test("migrates v1 turn settings to v2 timeout settings", async () => {
   expect(store.effective().runTimeoutMs).toBe(1200);
   const migrated = JSON.parse(await readFile(path.join(home, "subagents.json"), "utf8"));
   expect(migrated.version).toBe(2); expect(migrated.defaultMaxTurns).toBeUndefined(); expect(migrated.graceTurns).toBeUndefined();
+});
+
+test("loads and validates bounded history settings", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "herdr-subagents-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-project-"));
+  await writeFile(path.join(home, "subagents.json"), JSON.stringify({ maxHistory: 25 }));
+  const store = await loadSettings(cwd, home);
+  expect(store.effective().maxHistory).toBe(25);
+  expect(() => validateSettingValue("maxConcurrent", 0)).toThrow(/between 1 and 32/);
+  expect(() => validateSettingValue("maxHistory", 1001)).toThrow(/between 1 and 1000/);
+  expect(() => validateSettingValue("runTimeoutMs", -1)).toThrow(/non-negative/);
 });
 
 test("global then project merge preserves precedence and unknown keys", async () => {
