@@ -1,6 +1,6 @@
 import { access, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { Container, type SelectItem, SelectList, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
+import { Container, matchesKey, Key, type SelectItem, SelectList, type SettingItem, SettingsList, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { CONFIG_DIR_NAME, DynamicBorder, type ExtensionAPI, type ExtensionContext, getAgentDir, getSettingsListTheme, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { SubagentManager, agentSchema, resultSchema, steerSchema } from "./manager.ts";
 import { AGENT_TOOL_DESCRIPTION, AGENT_TOOL_PROMPT_GUIDELINES, AGENT_TOOL_PROMPT_SNIPPET } from "./agent-tool-metadata.ts";
@@ -229,17 +229,137 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     renderResult(result, options, theme, context) { return renderRunResult(result, options, theme, context); },
   });
 
+  interface MenuItem { value: string; label: string; description: string; }
+  interface MenuSection { heading: string; items: MenuItem[]; }
+
+  async function mainMenu(ctx: ExtensionContext): Promise<string | undefined> {
+    const sections: MenuSection[] = [
+      {
+        heading: "Monitor",
+        items: [{ value: "runs", label: "Active & recent runs", description: "View, focus, steer, and stop running subagents" }],
+      },
+      {
+        heading: "Agents",
+        items: [
+          { value: "agents", label: "Browse definitions", description: "Inspect, configure models, and view agent definitions" },
+          { value: "create", label: "Create new agent", description: "Define a new agent with instructions, tools, and model" },
+        ],
+      },
+      {
+        heading: "Configuration",
+        items: [
+          { value: "settings", label: "Settings", description: "Concurrency, join mode, timeouts, and model overrides" },
+          { value: "trust", label: "Project trust", description: "Approve or revoke project-level agent definitions" },
+          { value: "reload", label: "Reload definitions", description: "Reload agent definitions from disk" },
+        ],
+      },
+    ];
+
+    const allItems: MenuItem[] = sections.flatMap((s) => s.items);
+    const SEPARATOR_LABEL = "─".repeat(24);
+
+    return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
+      let selectedIdx = 0;
+      let cachedWidth = 0;
+      let cachedLines: string[] = [];
+
+      const HEADING_INDENT = "  ";
+      const ITEM_INDENT = "    ";
+      const CLOSE_INDENT = "  ";
+      const PREFIX_GAP = " ";
+
+      function selectedPrefix(): string { return theme.fg("accent", "●"); }
+      function unselectedPrefix(): string { return theme.fg("dim", "○"); }
+      function headingStyle(text: string): string { return theme.fg("accent", theme.bold(text)); }
+      function itemStyle(text: string, selected: boolean): string { return selected ? theme.fg("accent", text) : theme.fg("text", text); }
+      function descStyle(text: string): string { return theme.fg("muted", text); }
+      function separatorStyle(text: string): string { return theme.fg("dim", text); }
+
+      function getChoiceValue(index: number): string | undefined {
+        if (index < allItems.length) return allItems[index].value;
+        return "close";
+      }
+
+      function renderAll(width: number): string[] {
+        const lines: string[] = [];
+        let itemIdx = 0;
+
+        for (const section of sections) {
+          lines.push(truncateToWidth(HEADING_INDENT + headingStyle(section.heading.toUpperCase()), width));
+          for (const item of section.items) {
+            const selected = itemIdx === selectedIdx;
+            const prefix = selected ? selectedPrefix() : unselectedPrefix();
+            const styled = itemStyle(item.label, selected);
+            lines.push(truncateToWidth(ITEM_INDENT + prefix + PREFIX_GAP + styled, width));
+            if (selected) {
+              lines.push(truncateToWidth(ITEM_INDENT + "   " + descStyle(item.description), width));
+            }
+            itemIdx++;
+          }
+          lines.push("");
+        }
+
+        lines.push(truncateToWidth(separatorStyle(SEPARATOR_LABEL), width));
+        const closeSelected = selectedIdx === allItems.length;
+        const closePrefix = closeSelected ? selectedPrefix() : unselectedPrefix();
+        const closeStyled = closeSelected ? theme.fg("accent", "Close") : theme.fg("text", "Close");
+        lines.push(truncateToWidth(CLOSE_INDENT + closePrefix + PREFIX_GAP + closeStyled, width));
+        if (closeSelected) {
+          lines.push(truncateToWidth(CLOSE_INDENT + "   " + descStyle("Exit the subagents menu"), width));
+        }
+
+        lines.push("");
+        lines.push(truncateToWidth(theme.fg("dim", "↑↓ navigate  ·  enter select  ·  esc back"), width));
+
+        return lines;
+      }
+
+      return {
+        render(width: number): string[] {
+          if (cachedWidth === width && cachedLines.length > 0) return cachedLines;
+          cachedLines = renderAll(width);
+          cachedWidth = width;
+          return cachedLines;
+        },
+        invalidate(): void {
+          cachedWidth = 0;
+          cachedLines = [];
+        },
+        handleInput(data: string): void {
+          const total = allItems.length + 1; // items + close
+
+          if (matchesKey(data, Key.up)) {
+            selectedIdx = (selectedIdx - 1 + total) % total;
+            cachedWidth = 0;
+            cachedLines = [];
+            tui.requestRender();
+          } else if (matchesKey(data, Key.down)) {
+            selectedIdx = (selectedIdx + 1) % total;
+            cachedWidth = 0;
+            cachedLines = [];
+            tui.requestRender();
+          } else if (matchesKey(data, Key.enter)) {
+            const value = getChoiceValue(selectedIdx);
+            if (value !== undefined) done(value);
+          } else if (matchesKey(data, Key.escape)) {
+            done(undefined);
+          }
+        },
+      };
+    });
+  }
+
   pi.registerCommand("agents", { description: "Inspect and configure Pi subagents", handler: async (_args, ctx) => {
     const active = manager; if (!active) return;
     try {
       if (!active.herdrAvailable()) ctx.ui.notify(`Herdr unavailable: ${active.herdrUnavailableMessage()}`, "warning");
       while (true) {
-        const choice = await ctx.ui.select("Subagents", ["Active/recent runs", "Agents", "Create new agent", "Settings", "Approve/revoke project agents", "Reload definitions", "Close"]);
-        if (!choice || choice === "Close") return;
-        if (choice === "Reload definitions") { await active.reload(); ctx.ui.notify("Agent definitions reloaded.", "info"); continue; }
-        if (choice === "Create new agent") { await createAgent(ctx, active); continue; }
-        if (choice === "Approve/revoke project agents") { const action = await ctx.ui.select("Project agents", ["Approve", "Revoke", "Back"]); if (action === "Approve") { const approved = await active.approveProject(); ctx.ui.notify(approved ? "Project agents approved for this session." : "Project agents not approved.", approved ? "info" : "warning"); } else if (action === "Revoke") { active.revokeProject(); ctx.ui.notify("Project agents revoked for this session.", "info"); } continue; }
-        if (choice === "Settings") {
+        const choice = await mainMenu(ctx);
+        if (!choice || choice === "close") return;
+        if (choice === "reload") { await active.reload(); ctx.ui.notify("Agent definitions reloaded.", "info"); continue; }
+        if (choice === "create") { await createAgent(ctx, active); continue; }
+        if (choice === "trust") { const action = await ctx.ui.select("Project agents", ["Approve", "Revoke", "Back"]); if (action === "Approve") { const approved = await active.approveProject(); ctx.ui.notify(approved ? "Project agents approved for this session." : "Project agents not approved.", approved ? "info" : "warning"); } else if (action === "Revoke") { active.revokeProject(); ctx.ui.notify("Project agents revoked for this session.", "info"); } continue; }
+        if (choice === "settings") {
           const settings = active.settingsForUI();
           const options = [`maxConcurrent: ${settings.maxConcurrent}`, `joinMode: ${settings.joinMode}`, `groupTimeoutMs: ${settings.groupTimeoutMs}`, `allowCallerModelOverride: ${settings.allowCallerModelOverride}`, `runTimeoutMs: ${settings.runTimeoutMs}`, "Back"];
           const setting = await ctx.ui.select("Settings", options); if (!setting || setting === "Back") continue;
@@ -250,7 +370,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           const scope = await ctx.ui.select("Persist setting", ["session", "project", "global", "Back"]); if (!scope || scope === "Back") continue;
           await active.saveSetting(name, parsed, scope as "global" | "project" | "session"); ctx.ui.notify(scope === "session" ? "Saved for this parent session." : "Saved for future runs.", "info"); continue;
         }
-        if (choice === "Active/recent runs") {
+        if (choice === "runs") {
           const runs = active.list();
           const selected = await selectDetailed(ctx, "Active and recent runs", runs.map((run) => ({
             value: run.id,
@@ -276,7 +396,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           if (action === "Remove") active.remove(run.id);
           continue;
         }
-        if (choice === "Agents") {
+        if (choice === "agents") {
           const defs = active.definitionsForUI();
           const selected = await selectDetailed(ctx, "Agents", defs.map((def) => ({
             value: def.name,
