@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { HerdrCommandAdapter, HerdrCommandError, herdrAgentStatus, parseHerdrJson } from "../src/herdr.ts";
+import { HerdrCommandAdapter, HerdrCommandError, herdrAgentPaneId, herdrAgentStatus, parseHerdrJson } from "../src/herdr.ts";
 
 const env = { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "w9", HERDR_PANE_ID: "w9:p1" } as NodeJS.ProcessEnv;
 
@@ -91,7 +91,10 @@ test("requires Herdr only when a command is launched", () => {
 
 test("parses JSON envelopes, statuses, and preserves Herdr errors", async () => {
   expect(parseHerdrJson("noise\n{\"result\":{\"ok\":true}}\n").result.ok).toBe(true);
+  expect(parseHerdrJson("log {not-json}\n{\"result\":{\"ok\":true}}\n").result.ok).toBe(true);
+  expect(parseHerdrJson("{\"level\":\"debug\"}\n{\"result\":{\"ok\":true}}\n").result.ok).toBe(true);
   expect(herdrAgentStatus({ result: { agent: { agent_status: "blocked", message: "Approve?" } } })).toMatchObject({ status: "blocked", message: "Approve?" });
+  expect(herdrAgentPaneId({ result: { agent: { pane_id: "w9:p4" } } })).toBe("w9:p4");
   const adapter = new HerdrCommandAdapter(async () => ({ stdout: "{\"error\":\"bad\"}", stderr: "exact herdr error", code: 1, killed: false }), env);
   await expect(adapter.get("w9:p3")).rejects.toMatchObject({ message: "exact herdr error", diagnostics: expect.stringContaining("exact herdr error") });
   expect(adapter.lastDiagnostics).toContain("exact herdr error");

@@ -75,4 +75,11 @@ describe("subagent rendering view models", () => {
     expect(content).toContain("Error: stopped");
     expect(content).toContain("Partial output: Partial plan");
   });
+
+  test("keeps blocked recovery guidance and batch notifications bounded", () => {
+    const blocked = notificationContent(notificationDetails("individual", [run({ status: "blocked", output: "", error: "Approve?" })]));
+    expect(blocked).toContain("Resolve the interaction");
+    const batch = notificationContent(notificationDetails("batch", Array.from({ length: 20 }, (_, index) => run({ id: `run-${index}`, output: "x".repeat(5000) }))));
+    expect(Buffer.byteLength(batch, "utf8")).toBeLessThanOrEqual(20000);
+  });
 });

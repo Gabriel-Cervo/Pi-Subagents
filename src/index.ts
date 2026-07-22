@@ -1,7 +1,7 @@
 import { access, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Container, matchesKey, Key, type SelectItem, SelectList, type SettingItem, SettingsList, Text, truncateToWidth } from "@earendil-works/pi-tui";
-import { CONFIG_DIR_NAME, DynamicBorder, type ExtensionAPI, type ExtensionContext, getAgentDir, getSettingsListTheme, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, type ExtensionAPI, type ExtensionContext, getAgentDir, getSettingsListTheme, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { SubagentManager, agentSchema, resultSchema, steerSchema } from "./manager.ts";
 import { AGENT_TOOL_DESCRIPTION, AGENT_TOOL_PROMPT_GUIDELINES, AGENT_TOOL_PROMPT_SNIPPET } from "./agent-tool-metadata.ts";
 import { agentResultViewModel, statusColorRole, statusIcon, SubagentNotificationComponent, ThemedLines, type ThemedLine } from "./rendering.ts";
@@ -11,14 +11,24 @@ import { HERDR_KINDS } from "./herdr.ts";
 export { AGENT_TOOL_DESCRIPTION, AGENT_TOOL_PROMPT_GUIDELINES, AGENT_TOOL_PROMPT_SNIPPET } from "./agent-tool-metadata.ts";
 
 function asError(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function formatDuration(ms: number): string {
+  if (ms === 0) return "disabled";
+  if (ms % 3_600_000 === 0) return `${ms / 3_600_000}h`;
+  if (ms % 60_000 === 0) return `${ms / 60_000}m`;
+  if (ms % 1_000 === 0) return `${ms / 1_000}s`;
+  return `${ms}ms`;
+}
 function outputText(result: RunResult, verbose = false): string {
   const output = result.output || result.partialOutput || result.error || `(run ${result.id}: ${result.status})`;
-  return verbose ? `[${result.id}] ${result.agent} (${result.status}, model ${result.model} via ${result.modelSource}, ${result.prompts} prompts)\n${output}` : output;
+  if (verbose) return `[${result.id}] ${result.agent} (${result.status}, model ${result.model} via ${result.modelSource}, ${result.prompts} prompts)\n${output}`;
+  if (result.status === "blocked" || result.status === "failed" || result.status === "aborted") return `[${result.id}] ${result.agent} (${result.status})\n${output}${result.status === "blocked" ? `\nUse this run ID with steer_subagent after resolving the interaction.` : ""}`;
+  return output;
 }
 function requireManager(manager: SubagentManager | undefined): SubagentManager { if (!manager) throw new Error("Subagent manager is not initialized."); return manager; }
 function failedRunMessage(result: RunResult): string {
   const partial = result.output || result.partialOutput;
-  return `${result.error || `Subagent ${result.status}.`}${partial ? `\n\nPartial output:\n${partial}` : ""}`;
+  const diagnostics = result.diagnostics ? `\n\nDiagnostics:\n${result.diagnostics.slice(0, 2000)}` : "";
+  return `Subagent ${result.agent} (${result.id}) ${result.status}: ${result.error || `No result was produced.`}${partial ? `\n\nPartial output:\n${partial}` : ""}${diagnostics}`;
 }
 
 function resultText(result: any): string {
@@ -137,12 +147,23 @@ async function createAgent(ctx: ExtensionContext, manager: SubagentManager): Pro
   if (!kind) return;
   let tools: string[] | undefined;
   let model: string | undefined;
+  let args: string[] | undefined;
   if (kind === "pi") {
     tools = await selectAgentTools(ctx);
     if (!tools) return;
     const availableModels = ctx.modelRegistry.getAvailable();
     model = await ctx.ui.select("Agent model", ["Inherit parent model", ...availableModels.map((item) => `${item.provider}/${item.id}`)]);
     if (!model) return;
+  } else {
+    const rawArgs = await ctx.ui.input("Native agent args (JSON array)", 'Optional, for example ["--model", "gpt-5"]');
+    if (rawArgs === undefined) return;
+    if (rawArgs.trim()) {
+      try {
+        const parsed: unknown = JSON.parse(rawArgs);
+        if (!Array.isArray(parsed) || !parsed.every((arg) => typeof arg === "string")) throw new Error("arguments must be a JSON array of strings");
+        args = [...parsed];
+      } catch (error) { throw new Error(`Invalid native agent args: ${asError(error)}`); }
+    } else args = [];
   }
 
   const source = await ctx.ui.select("Agent source", ["Project (.pi/agents)", "Global (~/.pi/agent/agents)"]);
@@ -152,7 +173,7 @@ async function createAgent(ctx: ExtensionContext, manager: SubagentManager): Pro
 
   const existing = manager.definitionsForUI().find((agent) => agent.name.toLocaleLowerCase() === name.toLocaleLowerCase());
   const selectedSource = isProject ? "project" : "global";
-  const defaultPath = join(isProject ? join(ctx.cwd, CONFIG_DIR_NAME, "agents") : join(getAgentDir(), "agents"), `${name}.md`);
+  const defaultPath = join(isProject ? manager.projectAgentsDir() : join(getAgentDir(), "agents"), `${name}.md`);
   const filePath = existing?.source === selectedSource && existing.filePath ? existing.filePath : defaultPath;
   let fileExists = false;
   try { await access(filePath); fileExists = true; } catch { /* new file */ }
@@ -168,6 +189,7 @@ async function createAgent(ctx: ExtensionContext, manager: SubagentManager): Pro
     `description: ${yamlString(description)}`,
     ...(kind === "pi" ? [`tools: ${yamlString(tools?.join(", ") ?? "")}`] : []),
     `kind: ${yamlString(kind)}`,
+    ...(kind !== "pi" && args?.length ? [`args: ${JSON.stringify(args)}`] : []),
     ...(kind === "pi" && model !== "Inherit parent model" ? [`model: ${yamlString(model ?? "")}`] : []),
     "enabled: true",
     "---",
@@ -358,15 +380,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         if (!choice || choice === "close") return;
         if (choice === "reload") { await active.reload(); ctx.ui.notify("Agent definitions reloaded.", "info"); continue; }
         if (choice === "create") { await createAgent(ctx, active); continue; }
-        if (choice === "trust") { const action = await ctx.ui.select("Project agents", ["Approve", "Revoke", "Back"]); if (action === "Approve") { const approved = await active.approveProject(); ctx.ui.notify(approved ? "Project agents approved for this session." : "Project agents not approved.", approved ? "info" : "warning"); } else if (action === "Revoke") { active.revokeProject(); ctx.ui.notify("Project agents revoked for this session.", "info"); } continue; }
+        if (choice === "trust") { const action = await ctx.ui.select("Project agents", ["Approve / re-approve", "Revoke", "Back"]); if (action === "Approve / re-approve") { const approved = await active.approveProject(true); ctx.ui.notify(approved ? "Project agents approved for this session." : "Project agents not approved.", approved ? "info" : "warning"); } else if (action === "Revoke") { active.revokeProject(); ctx.ui.notify("Project agents revoked for this session. Choose Approve again if needed.", "info"); } continue; }
         if (choice === "settings") {
           const settings = active.settingsForUI();
-          const options = [`maxConcurrent: ${settings.maxConcurrent}`, `joinMode: ${settings.joinMode}`, `groupTimeoutMs: ${settings.groupTimeoutMs}`, `allowCallerModelOverride: ${settings.allowCallerModelOverride}`, `runTimeoutMs: ${settings.runTimeoutMs}`, "Back"];
+          const options = [`maxConcurrent: ${settings.maxConcurrent} background runs`, `maxHistory: ${settings.maxHistory} runs`, `joinMode: ${settings.joinMode}`, `groupTimeoutMs: ${settings.groupTimeoutMs} (${formatDuration(Number(settings.groupTimeoutMs))})`, `allowCallerModelOverride: ${settings.allowCallerModelOverride}`, `runTimeoutMs: ${settings.runTimeoutMs} (${formatDuration(Number(settings.runTimeoutMs))})`, "Back"];
           const setting = await ctx.ui.select("Settings", options); if (!setting || setting === "Back") continue;
           const match = setting.match(/^(\w+):/); if (!match) continue; const name = match[1];
           let parsed: unknown;
           if (name === "allowCallerModelOverride") { const selected = await ctx.ui.select("Allow caller model override?", ["true", "false"]); if (!selected) continue; parsed = selected === "true"; }
-          else { const value = await ctx.ui.input(`New ${name}`, String(settings[name])); if (value === undefined) continue; parsed = name === "joinMode" ? value : Number(value); if (name === "joinMode" && parsed !== "async" && parsed !== "smart") { ctx.ui.notify("joinMode must be async or smart.", "error"); continue; } if (name !== "joinMode" && (!Number.isInteger(parsed) || (parsed as number) < 0)) { ctx.ui.notify("Enter a valid non-negative integer.", "error"); continue; } }
+          else { const value = await ctx.ui.input(`New ${name}`, name.endsWith("Ms") ? `${String(settings[name])} milliseconds (0 disables)` : String(settings[name])); if (value === undefined) continue; parsed = name === "joinMode" ? value : Number(value); if (name === "joinMode" && parsed !== "async" && parsed !== "smart") { ctx.ui.notify("joinMode must be async or smart.", "error"); continue; } if (name === "maxConcurrent" && (!Number.isInteger(parsed) || (parsed as number) < 1 || (parsed as number) > 32)) { ctx.ui.notify("maxConcurrent must be an integer between 1 and 32.", "error"); continue; } if (name === "maxHistory" && (!Number.isInteger(parsed) || (parsed as number) < 1 || (parsed as number) > 1000)) { ctx.ui.notify("maxHistory must be an integer between 1 and 1000.", "error"); continue; } if ((name === "groupTimeoutMs" || name === "runTimeoutMs") && (!Number.isInteger(parsed) || (parsed as number) < 0)) { ctx.ui.notify("Enter a valid non-negative integer in milliseconds.", "error"); continue; } }
           const scope = await ctx.ui.select("Persist setting", ["session", "project", "global", "Back"]); if (!scope || scope === "Back") continue;
           await active.saveSetting(name, parsed, scope as "global" | "project" | "session"); ctx.ui.notify(scope === "session" ? "Saved for this parent session." : "Saved for future runs.", "info"); continue;
         }

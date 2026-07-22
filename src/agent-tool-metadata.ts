@@ -14,4 +14,5 @@ export const AGENT_TOOL_PROMPT_GUIDELINES = [
   `Use Agent proactively for substantial work and dispatch by task. ${builtinDispatchGuidance()}.`,
   "For two or more independent, meaningful workstreams, consider separate Agent calls with run_in_background: true and then collect each id with get_subagent_result; keep dependent work sequential.",
   "Do not use Agent for trivial questions or work that is faster and clearer to do directly. Give each delegated agent a focused, self-contained prompt and description.",
+  "If a run is blocked, failed, or aborted, preserve its run id and use get_subagent_result or steer_subagent to recover when possible.",
 ];

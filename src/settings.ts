@@ -4,7 +4,7 @@ import path from "node:path";
 import { atomicWrite } from "./util.ts";
 import type { SessionOverrides, Settings } from "./types.ts";
 
-export const DEFAULT_SETTINGS: Settings = { version: 2, maxConcurrent: 4, joinMode: "smart", groupTimeoutMs: 30000, allowCallerModelOverride: true, runTimeoutMs: 1_800_000, agentModels: {} };
+export const DEFAULT_SETTINGS: Settings = { version: 2, maxConcurrent: 4, maxHistory: 100, joinMode: "smart", groupTimeoutMs: 30000, allowCallerModelOverride: true, runTimeoutMs: 1_800_000, agentModels: {} };
 const OBSOLETE = ["defaultMaxTurns", "graceTurns"];
 function read(file: string): Record<string, unknown> {
   if (!existsSync(file)) return {};
@@ -13,6 +13,7 @@ function read(file: string): Record<string, unknown> {
 function valid(input: Record<string, unknown>): Partial<Settings> {
   const out: Partial<Settings> = {};
   if (Number.isInteger(input.maxConcurrent) && (input.maxConcurrent as number) > 0) out.maxConcurrent = Math.min(input.maxConcurrent as number, 32);
+  if (Number.isInteger(input.maxHistory) && (input.maxHistory as number) > 0) out.maxHistory = Math.min(input.maxHistory as number, 1000);
   if (input.joinMode === "async" || input.joinMode === "smart") out.joinMode = input.joinMode;
   if (Number.isInteger(input.groupTimeoutMs) && (input.groupTimeoutMs as number) >= 0) out.groupTimeoutMs = input.groupTimeoutMs as number;
   if (typeof input.allowCallerModelOverride === "boolean") out.allowCallerModelOverride = input.allowCallerModelOverride;
@@ -23,6 +24,24 @@ function valid(input: Record<string, unknown>): Partial<Settings> {
     out.agentModels = models;
   }
   return out;
+}
+
+export function validateSettingValue(key: string, value: unknown): void {
+  if (key === "maxConcurrent" && (!Number.isInteger(value) || (value as number) < 1 || (value as number) > 32)) {
+    throw new Error("maxConcurrent must be an integer between 1 and 32.");
+  }
+  if (key === "maxHistory" && (!Number.isInteger(value) || (value as number) < 1 || (value as number) > 1000)) {
+    throw new Error("maxHistory must be an integer between 1 and 1000.");
+  }
+  if ((key === "groupTimeoutMs" || key === "runTimeoutMs") && (!Number.isInteger(value) || (value as number) < 0)) {
+    throw new Error(`${key} must be a non-negative integer in milliseconds.`);
+  }
+  if (key === "joinMode" && value !== "async" && value !== "smart") {
+    throw new Error("joinMode must be async or smart.");
+  }
+  if (key === "allowCallerModelOverride" && typeof value !== "boolean") {
+    throw new Error("allowCallerModelOverride must be boolean.");
+  }
 }
 function layer(raw: Record<string, unknown>): Settings { return { ...DEFAULT_SETTINGS, ...valid(raw), agentModels: { ...(valid(raw).agentModels ?? {}) } } as Settings; }
 function mergeModels(...layers: Record<string, string | undefined>[]): Record<string, string> {
@@ -76,6 +95,7 @@ export async function loadSettings(cwd: string, agentDir = path.join(os.homedir(
   return {
     globalPath, projectPath, global, project, effective,
     async save(scope, patch) {
+      for (const [key, value] of Object.entries(patch)) if (key !== "agentModels") validateSettingValue(key, value);
       const file = scope === "global" ? globalPath : projectPath;
       const target = scope === "global" ? global : project;
       const existing = migrated(read(file));
@@ -93,7 +113,7 @@ export async function loadSettings(cwd: string, agentDir = path.join(os.homedir(
       const existingKey = Object.keys(models).find((key) => key.toLocaleLowerCase() === name.toLocaleLowerCase());
       if (existingKey && existingKey !== name) delete models[existingKey];
       if (spec) models[name] = spec; else delete models[name];
-      target.agentModels = { ...models }; projectKeys.add("agentModels");
+      target.agentModels = { ...models }; if (scope === "project") projectKeys.add("agentModels");
       await atomicWrite(file, { ...existing, version: 2, agentModels: models });
     },
   };

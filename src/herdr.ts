@@ -25,11 +25,36 @@ export function isHerdrError(error: unknown, token: string): boolean {
 export function parseHerdrJson<T = any>(text: string): T {
   const trimmed = text.trim();
   try { return JSON.parse(trimmed) as T; } catch { /* find the envelope below */ }
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    try { return JSON.parse(trimmed.slice(start, end + 1)) as T; } catch { /* report the original output */ }
+  const candidates: unknown[] = [];
+  for (let start = 0; start < trimmed.length; start++) {
+    if (trimmed[start] !== "{" && trimmed[start] !== "[") continue;
+    const stack: string[] = [];
+    let quoted = false;
+    let escaped = false;
+    for (let end = start; end < trimmed.length; end++) {
+      const char = trimmed[end];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') quoted = false;
+        continue;
+      }
+      if (char === '"') { quoted = true; continue; }
+      if (char === "{" || char === "[") stack.push(char);
+      else if (char === "}" || char === "]") {
+        const expected = char === "}" ? "{" : "[";
+        if (stack.at(-1) !== expected) break;
+        stack.pop();
+        if (!stack.length) {
+          try { candidates.push(JSON.parse(trimmed.slice(start, end + 1))); } catch { /* keep scanning */ }
+          break;
+        }
+      }
+    }
   }
+  const envelopes = candidates.filter((candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate) && ("result" in candidate || "error" in candidate));
+  if (envelopes.length) return envelopes.at(-1) as T;
+  if (candidates.length) return candidates.at(-1) as T;
   throw new Error(`Invalid Herdr JSON output: ${truncate(trimmed || "(empty)", 4000)}`);
 }
 
@@ -47,6 +72,12 @@ export function herdrAgentStatus(payload: any): HerdrAgentInfo {
   const raw = String(agent?.agent_status ?? agent?.status ?? "unknown").toLowerCase();
   const status = (["idle", "working", "blocked", "done", "unknown"] as const).includes(raw as any) ? raw as HerdrAgentInfo["status"] : "unknown";
   return { status, message: typeof agent?.message === "string" ? agent.message : undefined, raw: agent };
+}
+
+export function herdrAgentPaneId(payload: any): string | undefined {
+  const agent = value(payload, "result", "agent") ?? value(payload, "agent") ?? payload;
+  const pane = agent?.pane_id ?? agent?.paneId ?? value(payload, "result", "pane", "pane_id") ?? value(payload, "result", "pane", "paneId");
+  return typeof pane === "string" && pane ? pane : undefined;
 }
 
 export class HerdrCommandAdapter {
@@ -135,6 +166,10 @@ export class HerdrCommandAdapter {
 
   async get(target: string): Promise<HerdrAgentInfo> {
     return herdrAgentStatus(await this.command(["agent", "get", target]));
+  }
+
+  async agentPaneId(target: string): Promise<string | undefined> {
+    return herdrAgentPaneId(await this.command(["agent", "get", target]));
   }
 
   async read(target: string, lines = 300): Promise<string> {

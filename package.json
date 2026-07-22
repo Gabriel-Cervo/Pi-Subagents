@@ -32,5 +32,5 @@
     "typescript": "^5.9.3",
     "vitest": "^4.1.9"
   },
-  "scripts": { "typecheck": "tsc --noEmit", "test": "vitest run" }
+  "scripts": { "typecheck": "node scripts/check-node.mjs && tsc --noEmit", "test": "node scripts/check-node.mjs && vitest run" }
 }

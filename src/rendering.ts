@@ -80,10 +80,11 @@ export function notificationContent(details: SubagentNotificationDetails): strin
   if (details.kind === "individual") {
     const run = details.runs[0];
     if (!run) return "No subagent notification.";
-    return `Subagent ${run.agent} (${run.id}) ${run.status} (${run.prompts} prompts):\n${notificationOutcome(run, 5000)}`;
+    const recovery = run.status === "blocked" ? "\nResolve the interaction in the focused pane, then steer or read this run using its ID." : "";
+    return `Subagent ${run.agent} (${run.id}) ${run.status} (${run.prompts} prompts):\n${notificationOutcome(run, 5000)}${recovery}`;
   }
   const lines = details.runs.map((run) => `${run.agent} (${run.id}) ${run.status} (${run.prompts} prompts):\n${notificationOutcome(run, 4000)}`);
-  return `Subagent results (${details.runs.length}):\n${lines.join("\n")}`;
+  return truncate(`Subagent results (${details.runs.length}):\n${lines.join("\n")}`, 20000);
 }
 
 export interface ThemedSegment {
@@ -205,7 +206,7 @@ export function agentResultViewModel(
   return {
     status,
     agent: typeof candidate?.agent === "string" ? candidate.agent : fallbackAgent,
-    output: typeof candidate?.output === "string" ? candidate.output : content || undefined,
+    output: typeof candidate?.output === "string" && candidate.output ? candidate.output : content || undefined,
     error: typeof candidate?.error === "string" ? candidate.error : isError ? content || "Subagent failed." : undefined,
     loading: isPartial || status === "running",
   };
