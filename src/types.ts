@@ -13,6 +13,7 @@ export interface AgentDefinition {
   name: string;
   description: string;
   displayName: string;
+  category?: string;
   tools: BuiltinTool[];
   model?: string;
   thinking?: ThinkingLevel;

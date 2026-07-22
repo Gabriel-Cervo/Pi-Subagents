@@ -1,7 +1,7 @@
 import { test, expect } from "vitest";
-import { agentSchema, resultSchema, steerSchema, buildAgentArgs, validateKindOverrides, validateResumeStatus } from "../src/manager.ts";
+import { agentSchema, resultSchema, steerSchema, buildAgentArgs, buildPiArgs, validateKindOverrides, validateResumeStatus } from "../src/manager.ts";
 import type { AgentDefinition } from "../src/types.ts";
-import { BUILTIN_AGENT_CATALOG } from "../src/builtins.ts";
+import { BUILTIN_AGENT_CATALOG, defaultAgentDefinitions } from "../src/builtins.ts";
 import { AGENT_TOOL_DESCRIPTION, AGENT_TOOL_PROMPT_GUIDELINES, AGENT_TOOL_PROMPT_SNIPPET } from "../src/agent-tool-metadata.ts";
 
 test("public tool schemas use the required names and fields", () => {
@@ -18,6 +18,33 @@ test("kind overrides ignore definition args while default kinds retain them", ()
   const definition = { name: "x", description: "x", displayName: "x", tools: ["read"], enabled: true, prompt: "x", source: "global", legacyFields: [], kind: "claude", args: ["--flag"] } as AgentDefinition;
   expect(buildAgentArgs(definition, "claude", "provider/model", "medium", "system", false)).toEqual(["--flag"]);
   expect(buildAgentArgs(definition, "pi", "provider/model", "medium", "system", true)).not.toContain("--flag");
+});
+
+test("Pi agents stay interactive for Herdr prompt and wait", () => {
+  const definition = { name: "x", description: "x", displayName: "x", tools: ["read"], enabled: true, prompt: "x", source: "default", legacyFields: [], kind: "pi" } as AgentDefinition;
+  const args = buildPiArgs(definition, "provider/model", "medium", "system");
+  expect(args).not.toContain("--print");
+  expect(args).toContain("--no-session");
+  expect(args).toContain("--system-prompt");
+});
+
+test("default catalog exposes distinct, prompted roles with least-privilege tools", () => {
+  const names = BUILTIN_AGENT_CATALOG.map((agent) => agent.name.toLocaleLowerCase());
+  expect(new Set(names).size).toBe(names.length);
+  expect(BUILTIN_AGENT_CATALOG.length).toBeGreaterThanOrEqual(20);
+  for (const agent of BUILTIN_AGENT_CATALOG) {
+    expect(agent.category).toBeTruthy();
+    expect(agent.prompt.length).toBeGreaterThan(40);
+    expect(agent.dispatchGuidance.length).toBeGreaterThan(20);
+  }
+
+  const readOnly = new Set(["explore", "plan", "reviewer", "architect", "ux-designer", "api-designer", "security-auditor", "performance-engineer", "accessibility-auditor", "researcher", "product-analyst"]);
+  for (const agent of defaultAgentDefinitions()) {
+    if (readOnly.has(agent.name.toLocaleLowerCase())) {
+      expect(agent.tools).not.toContain("edit");
+      expect(agent.tools).not.toContain("write");
+    }
+  }
 });
 
 test("non-Pi kinds reject model and thinking overrides", () => {

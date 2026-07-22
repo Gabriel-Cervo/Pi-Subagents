@@ -403,6 +403,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
             label: `${def.enabled ? "●" : "○"} ${def.displayName}`,
             details: ([
               [{ text: def.description, role: "text" }],
+              ...(def.category ? [[{ text: "Category: ", role: "muted" }, { text: def.category, role: "dim" }]] : []),
               [{ text: "Source: ", role: "muted" }, { text: `${def.source}  •  `, role: "dim" }, { text: def.enabled ? "● enabled" : "○ disabled", role: def.enabled ? "success" : "muted" }],
               [{ text: "Kind: ", role: "muted" }, { text: def.kind, role: "dim" }],
               ...(def.kind === "pi" ? [

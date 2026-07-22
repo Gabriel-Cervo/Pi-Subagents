@@ -38,11 +38,12 @@ const terminal = (status: RunResult["status"]) => status === "completed" || stat
 
 /** Build the exact pi argv used by Herdr's `agent start -- ...` boundary. */
 export function buildPiArgs(definition: AgentDefinition, model: string, thinking: ThinkingLevel, systemPrompt: string, includeDefinitionArgs = true): string[] {
-  // --print forces print mode (non-TUI) so all output goes to stdout. Without it,
-  // the pseudo-TTY Herdr provides triggers interactive TUI mode, which paints to
-  // the terminal's alternate screen. Markers on the alt-screen are invisible to
-  // herdr.read, breaking result capture for Explore/Plan and any verbose agent.
-  return ["--print", "--model", model, "--thinking", thinking, "--tools", definition.tools.join(","), "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--no-session", "--system-prompt", systemPrompt, ...(includeDefinitionArgs ? (definition.args ?? []) : [])];
+  // Herdr's agent prompt/wait protocol needs a long-lived interactive agent.
+  // --print is single-shot in Pi: with no CLI prompt it exits before Herdr can
+  // submit the task, which leaves a stale agent name and causes agent not found.
+  // Herdr provides a pseudo-TTY, so interactive Pi remains controllable and its
+  // terminal output can be read after the result markers are emitted.
+  return ["--model", model, "--thinking", thinking, "--tools", definition.tools.join(","), "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--no-session", "--system-prompt", systemPrompt, ...(includeDefinitionArgs ? (definition.args ?? []) : [])];
 }
 export function buildAgentArgs(definition: AgentDefinition, kind: HerdrKind, model: string, thinking: ThinkingLevel, systemPrompt: string, overridden: boolean): string[] {
   if (kind === "pi") return buildPiArgs(definition, model, thinking, systemPrompt, !overridden);

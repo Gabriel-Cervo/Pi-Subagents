@@ -21,9 +21,11 @@ Use `get_subagent_result` with the returned `agent_id`, and `steer_subagent` to 
 
 Background runs retain FIFO scheduling and smart joins. Status metadata reports Herdr prompt count (`prompts`), not internal LLM turns. Results are delimited, read from the settled Herdr agent, capped at 50 KiB, and the owned tab is closed after success, failure, abort, or timeout. The default timeout is 1,800,000 ms; `runTimeoutMs: 0` disables it. On incomplete terminal output the agent is asked to write Markdown to a temporary path. Approval/question states are returned as `blocked`, notified to the parent, and left open for inspection or steering.
 
+Pi subagents run as long-lived interactive agents. Herdr submits work through `agent prompt` and observes completion through `agent wait`, so the extension deliberately does not start Pi with `--print`. Print mode exits when no startup prompt is supplied and would release the Herdr agent name before the task was submitted.
+
 ## Agent definitions
 
-Global definitions live in `~/.pi/agent/agents/*.md`; trusted project definitions live in the nearest `.pi/agents/*.md` and override defaults. Built-ins are `general-purpose`, `Explore`, `Plan`, and `implementer`, all defaulting to Herdr's `pi` kind.
+Global definitions live in `~/.pi/agent/agents/*.md`; trusted project definitions live in the nearest `.pi/agents/*.md` and override defaults. Built-ins are defined in [`src/builtins.ts`](src/builtins.ts), and all default to Herdr's `pi` kind.
 
 ```md
 ---
@@ -42,6 +44,38 @@ Inspect the change and report actionable findings.
 `kind` accepts every installed Herdr 0.7.5 kind: `pi`, `claude`, `codex`, `gemini`, `cursor`, `devin`, `agy`, `cline`, `omp`, `mastracode`, `opencode`, `copilot`, `kimi`, `kiro`, `droid`, `amp`, `grok`, `hermes`, `kilo`, `qodercli`, and `maki`. Optional frontmatter `args` is a string array. For the definition's default kind, those arguments are passed unchanged. A per-call kind override ignores definition args. Pi receives safe generated flags for model, thinking, tools, isolation, and system prompt; non-Pi kinds receive only explicit definition args.
 
 Project definitions remain subject to Pi project trust and one-time approval. `/agents` can inspect live and blocked runs (Focus, Read, Steer, Stop), view/resume/remove completed records, create definitions with a kind selector, configure Pi models, and migrate settings. The creation wizard asks for tools and model only for `kind: pi`; other kinds use their explicit args.
+
+### Default agent catalog
+
+The extension includes a broad, focused catalog in [`src/builtins.ts`](src/builtins.ts). Definitions use the parent model by default. Read-only roles do not receive `edit` or `write`, while implementation roles receive the full built-in tool set.
+
+| Agent | Best use |
+| --- | --- |
+| `general-purpose` | Default coding or research fallback |
+| `Explore` | Read-only repository reconnaissance |
+| `Plan` | Ordered plans for multi-file work |
+| `implementer` | Focused implementation and verification |
+| `debugger` | Reproducing failures and fixing root causes |
+| `reviewer` | Independent read-only code review |
+| `test-engineer` | Test design, implementation, and coverage gaps |
+| `refactorer` | Behavior-preserving structural changes |
+| `architect` | System boundaries and design trade-offs |
+| `frontend-engineer` | UI components, styling, and interaction states |
+| `ux-designer` | User flows, interface requirements, and acceptance criteria |
+| `backend-engineer` | Services, business logic, and integrations |
+| `api-designer` | API and event contract design |
+| `security-auditor` | Threat modeling and vulnerability review |
+| `performance-engineer` | Evidence-based latency, memory, and scale work |
+| `accessibility-auditor` | Keyboard, screen-reader, and inclusive UI audits |
+| `docs-writer` | README, guides, API docs, and runbooks |
+| `devops-engineer` | CI, deployment, packaging, and observability |
+| `data-engineer` | Schemas, queries, pipelines, and data quality |
+| `migration-engineer` | Version, schema, and compatibility migrations |
+| `release-engineer` | Release readiness, versioning, and rollback checks |
+| `researcher` | Evidence gathering about code and dependencies |
+| `product-analyst` | Requirements, edge cases, and acceptance criteria |
+
+Every built-in prompt tells the agent what to inspect first, what it may change, how to verify the work, and what to include in its final report. Choose a specialist for its named job, use `Explore` or `Plan` before uncertain work, and use `general-purpose` only when no specialist fits.
 
 ## Settings
 
