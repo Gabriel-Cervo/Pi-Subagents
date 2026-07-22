@@ -24,8 +24,11 @@ interface RecordState extends RunResult {
   resolve: (result: RunResult) => void;
   settled: boolean;
   resultResolved: boolean;
-  tabId?: string;
+  paneId?: string;
   agentTarget?: string;
+  closingPane?: Promise<void>;
+  lastProgress?: string;
+  updatesActive: boolean;
   diagnostics?: string;
   timedOut?: boolean;
   effectiveKind: HerdrKind;
@@ -34,6 +37,7 @@ interface RecordState extends RunResult {
   timeout?: ReturnType<typeof setTimeout>;
 }
 interface Group { id: string; runs: Set<string>; ended: boolean; timer?: ReturnType<typeof setTimeout>; delivered: Set<string>; firstCompleted: boolean; timedOut: boolean; }
+const PROGRESS_POLL_MS = 250;
 const terminal = (status: RunResult["status"]) => status === "completed" || status === "failed" || status === "aborted";
 
 /** Build the exact pi argv used by Herdr's `agent start -- ...` boundary. */
@@ -140,25 +144,33 @@ export class SubagentManager {
       const previous = existing.output || existing.partialOutput;
       const settings = this.settings?.effective(this.sessionOverrides);
       if (!settings) throw new Error("Settings unavailable.");
+      let nextModel = existing.model;
+      let nextModelSource = existing.modelSource;
       if (nextKind === "pi") {
         if (request.model !== undefined) {
           const resolved = resolveAgentModel(existing.definition, settings, this.ctx, request.model, settings.allowCallerModelOverride);
-          existing.model = modelKey(resolved.model)!;
-          existing.modelSource = resolved.source;
+          nextModel = modelKey(resolved.model)!;
+          nextModelSource = resolved.source;
         } else if (existing.effectiveKind !== "pi") {
           const resolved = resolveAgentModel(existing.definition, settings, this.ctx, undefined, settings.allowCallerModelOverride);
-          existing.model = modelKey(resolved.model)!;
-          existing.modelSource = resolved.source;
+          nextModel = modelKey(resolved.model)!;
+          nextModelSource = resolved.source;
         }
       } else {
-        existing.model = `${nextKind}/default`;
-        existing.modelSource = "herdr";
+        nextModel = `${nextKind}/default`;
+        nextModelSource = "herdr";
       }
+      if (existing.paneId || existing.closingPane) {
+        await this.closeOwnedPane(existing);
+        if (existing.paneId || existing.closingPane) throw new Error(`Run '${existing.id}' cannot be resumed while its owned pane remains open.`);
+      }
+      existing.model = nextModel;
+      existing.modelSource = nextModelSource;
       existing.effectiveKind = nextKind;
       existing.kindOverridden = request.kind !== undefined ? true : existing.kindOverridden;
       existing.thinking = request.thinking ?? existing.thinking;
       existing.request = { ...request, kind: nextKind, prompt: previous ? `Previous run result:\n\n${previous}\n\nNew instruction:\n${request.prompt}` : request.prompt, thinking: existing.thinking };
-      existing.description = request.description; existing.status = "queued"; existing.error = undefined; existing.output = ""; existing.fullOutput = ""; existing.partialOutput = ""; existing.completedAt = undefined; existing.controller = new AbortController(); existing.abortListener = undefined; existing.onUpdate = onUpdate; existing.pendingSteer = undefined; existing.settled = false; existing.resultResolved = false; existing.consumed = false; existing.tabId = undefined; existing.agentTarget = undefined; existing.diagnostics = undefined; existing.prompts = 0; existing.promise = new Promise<RunResult>((resolve) => { existing.resolve = resolve; });
+      existing.description = request.description; existing.status = "queued"; existing.error = undefined; existing.output = ""; existing.fullOutput = ""; existing.partialOutput = ""; existing.completedAt = undefined; existing.controller = new AbortController(); existing.abortListener = undefined; existing.onUpdate = onUpdate; existing.pendingSteer = undefined; existing.settled = false; existing.resultResolved = false; existing.consumed = false; existing.paneId = undefined; existing.agentTarget = undefined; existing.closingPane = undefined; existing.lastProgress = undefined; existing.updatesActive = false; existing.diagnostics = undefined; existing.prompts = 0; existing.promise = new Promise<RunResult>((resolve) => { existing.resolve = resolve; });
       const group = this.currentTurn; existing.groupId = group?.id; if (group) group.runs.add(existing.id); return existing;
     }
     const projectCandidate = discoverAgents(this.ctx.cwd, true, this.warned).agents.find((agent) => agent.name.toLocaleLowerCase() === request.subagent_type.toLocaleLowerCase() && agent.project);
@@ -170,7 +182,7 @@ export class SubagentManager {
     const thinking = kind === "pi" ? request.thinking ?? def.thinking ?? "medium" : "off";
     if (!(THINKING_LEVELS as readonly string[]).includes(thinking)) throw new Error(`thinking must be one of ${THINKING_LEVELS.join(", ")}.`);
     const id = `run-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`; let resolve!: (r: RunResult) => void; const promise = new Promise<RunResult>((res) => { resolve = res; });
-    const record: RecordState = { id, agent: def.name, description: request.description, status: "queued", output: "", fullOutput: "", request, definition: def, effectiveKind: kind, kindOverridden: request.kind !== undefined, model: resolved ? modelKey(resolved.model)! : `${kind}/default`, modelSource: resolved?.source ?? "herdr", thinking: thinking as ThinkingLevel, prompts: 0, createdAt: Date.now(), controller: new AbortController(), onUpdate, promise, resolve, settled: false, resultResolved: false, consumed: false };
+    const record: RecordState = { id, agent: def.name, description: request.description, status: "queued", output: "", fullOutput: "", request, definition: def, effectiveKind: kind, kindOverridden: request.kind !== undefined, model: resolved ? modelKey(resolved.model)! : `${kind}/default`, modelSource: resolved?.source ?? "herdr", thinking: thinking as ThinkingLevel, prompts: 0, createdAt: Date.now(), controller: new AbortController(), onUpdate, promise, resolve, settled: false, resultResolved: false, consumed: false, updatesActive: false };
     const group = this.currentTurn; if (group) { record.groupId = group.id; group.runs.add(id); } this.records.set(id, record); if (group && group.runs.size >= 2) this.maybeNotify(group); return record;
   }
 
@@ -178,10 +190,14 @@ export class SubagentManager {
     // Availability is deliberately checked here, not during extension loading.
     this.herdr.assertAvailable();
     const record = await this.createRecord(request, onUpdate);
+    record.updatesActive = !!onUpdate && !request.run_in_background;
     if (signal) { const stop = () => { void this.stop(record.id); }; if (signal.aborted) await this.stop(record.id); else { signal.addEventListener("abort", stop, { once: true }); record.abortListener = () => signal.removeEventListener("abort", stop); } }
-    if (terminal(record.status) || record.status === "blocked") return this.publicResult(record);
-    if (request.run_in_background) { this.scheduler.enqueue(record, () => this.run(record)); return this.publicResult(record); }
-    await this.scheduler.runForeground(() => this.run(record)); return this.publicResult(await record.promise);
+    if (terminal(record.status) || record.status === "blocked") { record.updatesActive = false; return this.publicResult(record); }
+    if (request.run_in_background) { record.updatesActive = false; this.scheduler.enqueue(record, () => this.run(record)); return this.publicResult(record); }
+    try {
+      await this.scheduler.runForeground(() => this.run(record));
+      return this.publicResult(await record.promise);
+    } finally { record.updatesActive = false; }
   }
 
   private resolveBlocked(record: RecordState, message?: string): void {
@@ -191,12 +207,52 @@ export class SubagentManager {
   }
   private finish(record: RecordState, status: Exclude<RunResult["status"], "queued" | "running" | "blocked">, error?: string): void {
     if (record.settled) return;
-    record.status = status; record.error = error; record.completedAt = Date.now(); record.output = truncate(record.fullOutput || record.output || record.partialOutput || ""); record.settled = true; record.resultResolved = true; record.abortListener?.(); record.abortListener = undefined; if (record.timeout) clearTimeout(record.timeout); record.resolve(this.publicResult(record)); if (record.groupId) this.maybeNotify(this.groups.get(record.groupId)!); if (record.request.run_in_background && this.settings?.effective(this.sessionOverrides).joinMode === "async" && !record.groupId) this.notifyOne(record);
+    record.status = status; record.error = error; record.completedAt = Date.now(); record.output = truncate(record.fullOutput || record.output || record.partialOutput || ""); record.settled = true; record.updatesActive = false; record.resultResolved = true; record.abortListener?.(); record.abortListener = undefined; if (record.timeout) clearTimeout(record.timeout); record.resolve(this.publicResult(record)); if (record.groupId) this.maybeNotify(this.groups.get(record.groupId)!); if (record.request.run_in_background && this.settings?.effective(this.sessionOverrides).joinMode === "async" && !record.groupId) this.notifyOne(record);
   }
-  private async closeOwned(record: RecordState): Promise<void> { if (record.tabId) { const tab = record.tabId; record.tabId = undefined; await this.herdr.closeTab(tab); } }
+  private async closeOwnedPane(record: RecordState): Promise<void> {
+    if (record.closingPane) return record.closingPane;
+    const pane = record.paneId;
+    if (!pane) return;
+    const closing = (async () => {
+      const closed = await this.herdr.closePane(pane);
+      if (closed) {
+        if (record.paneId === pane) record.paneId = undefined;
+        if (record.agentTarget === pane) record.agentTarget = undefined;
+      } else {
+        record.diagnostics = truncate([record.diagnostics, this.herdr.lastDiagnostics].filter(Boolean).join("\n"), 12000);
+      }
+    })();
+    record.closingPane = closing;
+    try { await closing; } finally { if (record.closingPane === closing) record.closingPane = undefined; }
+  }
   private async interruptAndClose(record: RecordState): Promise<void> {
-    if (record.agentTarget) { try { await this.herdr.sendKeys(record.agentTarget, "ctrl+c"); } catch { /* preserve the original lifecycle error */ } }
-    await this.closeOwned(record);
+    const pane = record.paneId;
+    if (pane) { try { await this.herdr.sendKeys(pane, "ctrl+c"); } catch { /* preserve the original lifecycle error */ } }
+    await this.closeOwnedPane(record);
+  }
+  private emitProgress(record: RecordState, output: string): void {
+    if (!record.onUpdate || !record.updatesActive || record.settled || record.controller.signal.aborted) return;
+    const partial = truncate(output.trim());
+    if (!partial || partial === record.lastProgress) return;
+    record.lastProgress = partial;
+    record.partialOutput = partial;
+    try { record.onUpdate(partial, this.publicResult(record)); }
+    catch (error) { record.diagnostics = truncate(`${record.diagnostics ? `${record.diagnostics}\n` : ""}Progress callback failed: ${error instanceof Error ? error.message : String(error)}`, 12000); }
+  }
+  private async monitorProgress(record: RecordState): Promise<void> {
+    if (!record.onUpdate || record.request.run_in_background) return;
+    while (record.updatesActive && !record.settled && !record.controller.signal.aborted) {
+      const target = record.agentTarget;
+      if (!target) return;
+      try {
+        const snapshot = await this.herdr.read(target, 300);
+        if (record.updatesActive && !record.settled && !record.controller.signal.aborted) this.emitProgress(record, snapshot);
+      } catch (error) {
+        if (!record.settled) record.diagnostics = truncate(`${record.diagnostics ? `${record.diagnostics}\n` : ""}Progress read failed: ${error instanceof Error ? error.message : String(error)}`, 12000);
+      }
+      if (!record.updatesActive || record.settled || record.controller.signal.aborted) return;
+      await new Promise<void>((resolve) => setTimeout(resolve, PROGRESS_POLL_MS));
+    }
   }
   private async readResult(record: RecordState, marker: string): Promise<string> {
     // Try with increasing line counts to find markers. Some agents produce verbose
@@ -249,15 +305,29 @@ export class SubagentManager {
       await this.settleAgent(record);
     } catch (error) {
       if (record.settled) return;
-      this.finish(record, record.controller.signal.aborted ? "aborted" : "failed", error instanceof Error ? error.message : String(error));
-      await this.closeOwned(record);
+      const status = record.controller.signal.aborted ? "aborted" : "failed";
+      const message = error instanceof Error ? error.message : String(error);
+      await this.closeOwnedPane(record);
+      this.finish(record, status, message);
     }
   }
   private async settleAgent(record: RecordState): Promise<void> {
     if (record.settled || !record.agentTarget) return;
-    try { record.fullOutput = await this.readResult(record, `__PI_SUBAGENT_RESULT_${record.id}__`); record.output = truncate(record.fullOutput); this.finish(record, record.controller.signal.aborted ? "aborted" : "completed", record.controller.signal.aborted ? "Aborted." : undefined); }
-    catch (error) { this.finish(record, record.controller.signal.aborted ? "aborted" : "failed", error instanceof Error ? error.message : String(error)); }
-    finally { await this.closeOwned(record); }
+    let status: Exclude<RunResult["status"], "queued" | "running" | "blocked"> = "completed";
+    let error: string | undefined;
+    try {
+      record.fullOutput = await this.readResult(record, `__PI_SUBAGENT_RESULT_${record.id}__`);
+      record.output = truncate(record.fullOutput);
+      this.emitProgress(record, record.fullOutput);
+      if (record.controller.signal.aborted) { status = "aborted"; error = "Aborted."; }
+    }
+    catch (caught) {
+      this.emitProgress(record, record.partialOutput || "");
+      status = record.controller.signal.aborted ? "aborted" : "failed";
+      error = caught instanceof Error ? caught.message : String(caught);
+    }
+    await this.closeOwnedPane(record);
+    this.finish(record, status, error);
   }
   private async run(record: RecordState): Promise<void> {
     if (record.settled) return;
@@ -270,10 +340,12 @@ export class SubagentManager {
       const kind = record.effectiveKind; const overridden = record.kindOverridden;
       const systemPrompt = `You are ${record.definition.displayName}. ${record.definition.prompt}`;
       const args = buildAgentArgs(record.definition, kind, record.model, record.thinking, systemPrompt, overridden);
-      const tab = await this.herdr.createTab(this.ctx.cwd, `subagent ${record.id}`); record.tabId = tab.tabId; record.agentTarget = tab.rootPaneId;
+      const pane = await this.herdr.splitPane(this.ctx.cwd); record.paneId = pane.paneId; record.agentTarget = pane.paneId;
+      if (record.settled || record.controller.signal.aborted) { await this.closeOwnedPane(record); return; }
       const name = `subagent_${record.id.slice(-8)}`;
-      try { await this.herdr.startAgent(name, kind, tab.rootPaneId, args, record.controller.signal); } catch (error) { record.diagnostics = this.herdr.lastDiagnostics; await this.closeOwned(record); throw error; }
-      record.agentTarget = tab.rootPaneId;
+      try { await this.herdr.startAgent(name, kind, pane.paneId, args, record.controller.signal); } catch (error) { record.diagnostics = this.herdr.lastDiagnostics; await this.closeOwnedPane(record); throw error; }
+      record.agentTarget = pane.paneId;
+      void this.monitorProgress(record);
       let prompt = record.request.prompt;
       if (record.request.inherit_context) {
         const context = readableContext(safeJson(this.ctx.sessionManager.buildContextEntries()));
@@ -287,8 +359,15 @@ export class SubagentManager {
       if (state.status === "blocked") { this.resolveBlocked(record, state.message); void this.monitorBlocked(record); return; }
       await this.settleAgent(record);
     } catch (error) {
-      if (!record.settled) { record.diagnostics = this.herdr.lastDiagnostics || record.diagnostics; this.finish(record, record.controller.signal.aborted ? "aborted" : "failed", record.timedOut ? "Subagent run timed out." : error instanceof Error ? error.message : String(error)); }
-      await this.closeOwned(record);
+      if (!record.settled) {
+        record.diagnostics = this.herdr.lastDiagnostics || record.diagnostics;
+        const status = record.controller.signal.aborted ? "aborted" : "failed";
+        const message = record.timedOut ? "Subagent run timed out." : error instanceof Error ? error.message : String(error);
+        await this.closeOwnedPane(record);
+        this.finish(record, status, message);
+      } else {
+        await this.closeOwnedPane(record);
+      }
     }
   }
   private async timeoutRun(record: RecordState): Promise<void> {
@@ -303,7 +382,7 @@ export class SubagentManager {
   async focus(id: string): Promise<void> { const r = this.records.get(id); if (!r?.agentTarget) throw new Error(`Run '${id}' has no live Herdr agent.`); await this.herdr.focus(r.agentTarget); }
   async readLive(id: string): Promise<string> { const r = this.records.get(id); if (!r?.agentTarget) throw new Error(`Run '${id}' has no live Herdr agent.`); return this.herdr.read(r.agentTarget); }
   async resume(id: string, prompt: string): Promise<RunResult> { const r = this.records.get(id); if (!r) throw new Error(`Unknown subagent run '${id}'.`); return this.launch({ prompt, description: r.description, subagent_type: r.agent, resume: id }); }
-  remove(id: string): void { const r = this.records.get(id); if (!r) throw new Error(`Unknown subagent run '${id}'.`); if (!terminal(r.status)) throw new Error("Stop a run before removing it."); this.records.delete(id); }
+  remove(id: string): void { const r = this.records.get(id); if (!r) throw new Error(`Unknown subagent run '${id}'.`); if (!terminal(r.status)) throw new Error("Stop a run before removing it."); if (r.paneId || r.closingPane) throw new Error("Cannot remove a run while its owned pane is still open or closing."); this.records.delete(id); }
   async stop(id: string): Promise<RunResult> { const r = this.records.get(id); if (!r) throw new Error(`Unknown subagent run '${id}'.`); if (terminal(r.status)) return this.publicResult(r); r.controller.abort(); if (r.status === "queued") { this.scheduler.remove(r); this.finish(r, "aborted", "Stopped before initialization."); } else { await this.interruptAndClose(r); this.finish(r, "aborted", "Stopped by user."); } return this.publicResult(r); }
   list(): RunResult[] { return [...this.records.values()].map((r) => this.publicResult(r)); }
   definitionsForUI(): AgentDefinition[] {
@@ -326,7 +405,7 @@ export class SubagentManager {
       for (const r of this.records.values()) {
         r.controller.abort(); r.abortListener?.(); r.abortListener = undefined;
         if (!r.settled) this.finish(r, "aborted", "Extension shut down.");
-        if (r.agentTarget || r.tabId) closing.push(this.interruptAndClose(r));
+        if (r.paneId) closing.push(this.interruptAndClose(r));
       }
       this.scheduler.dispose();
       for (const g of this.groups.values()) if (g.timer) clearTimeout(g.timer);

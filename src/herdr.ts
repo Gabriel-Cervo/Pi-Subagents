@@ -33,7 +33,7 @@ export function parseHerdrJson<T = any>(text: string): T {
   throw new Error(`Invalid Herdr JSON output: ${truncate(trimmed || "(empty)", 4000)}`);
 }
 
-export interface HerdrTab { tabId: string; rootPaneId: string }
+export interface HerdrPane { paneId: string }
 export interface HerdrAgentInfo { status: "idle" | "working" | "blocked" | "done" | "unknown"; message?: string; raw: any }
 
 function value(root: any, ...keys: string[]): any {
@@ -54,10 +54,12 @@ export class HerdrCommandAdapter {
   constructor(private readonly exec: HerdrExec, private readonly env: NodeJS.ProcessEnv = process.env) {}
 
   assertAvailable(): string {
-    if (this.env.HERDR_ENV !== "1") throw new Error("Pi Subagents requires a Herdr-managed pane (HERDR_ENV=1).");
+    if (this.env.HERDR_ENV !== "1") throw new Error("Herdr Subagents requires a Herdr-managed pane (HERDR_ENV=1).");
     const workspace = this.env.HERDR_WORKSPACE_ID;
-    if (!workspace) throw new Error("Pi Subagents requires HERDR_WORKSPACE_ID in the Herdr-managed pane.");
-    return workspace;
+    if (!workspace) throw new Error("Herdr Subagents requires HERDR_WORKSPACE_ID in the Herdr-managed pane.");
+    const callerPane = this.env.HERDR_PANE_ID;
+    if (!callerPane) throw new Error("Herdr Subagents requires HERDR_PANE_ID in the Herdr-managed pane.");
+    return callerPane;
   }
 
   private async execute(args: string[], options?: HerdrExecOptions): Promise<HerdrExecResult> {
@@ -81,15 +83,21 @@ export class HerdrCommandAdapter {
     return parseHerdrJson(result.stdout);
   }
 
-  async createTab(cwd: string, label: string): Promise<HerdrTab> {
-    const workspace = this.assertAvailable();
-    const payload = await this.command(["tab", "create", "--workspace", workspace, "--cwd", cwd, "--label", label, "--no-focus"]);
-    const tab = value(payload, "result", "tab");
-    const pane = value(payload, "result", "root_pane");
-    const tabId = typeof tab === "string" ? tab : tab?.tab_id;
-    const rootPaneId = typeof pane === "string" ? pane : pane?.pane_id;
-    if (!tabId || !rootPaneId) throw new Error("Herdr tab create returned no tab or root pane ID.");
-    return { tabId, rootPaneId };
+  async splitPane(cwd: string): Promise<HerdrPane> {
+    const callerPaneId = this.assertAvailable();
+    try {
+      // This mutates layout before returning the new ID; let it finish so a caller can safely close the exact pane.
+      const payload = await this.command(["pane", "split", "--current", "--direction", "right", "--cwd", cwd, "--no-focus"]);
+      const pane = value(payload, "result", "pane");
+      const paneId = typeof pane === "string" ? pane : pane?.pane_id;
+      if (!paneId) throw new Error("Herdr pane split returned no pane ID.");
+      if (paneId === callerPaneId) throw new Error("Herdr pane split returned the caller pane; refusing to claim or close it.");
+      return { paneId };
+    } catch (error) {
+      // A failed split may have mutated layout without returning a reliable ID. Never infer an ID from focused or workspace-wide state.
+      this.lastDiagnostics = truncate(`${this.lastDiagnostics}\nPane split did not return a safely identifiable child pane; refusing to close an inferred pane.`, 12000);
+      throw error;
+    }
   }
 
   async startAgent(name: string, kind: HerdrKind, paneId: string, args: string[] = [], signal?: AbortSignal): Promise<void> {
@@ -138,7 +146,12 @@ export class HerdrCommandAdapter {
 
   async sendKeys(target: string, ...keys: string[]): Promise<void> { await this.command(["agent", "send-keys", target, ...keys]); }
   async focus(target: string): Promise<void> { await this.command(["agent", "focus", target]); }
-  async closeTab(tabId: string): Promise<void> {
-    try { await this.command(["tab", "close", tabId]); } catch (error) { this.lastDiagnostics = truncate(`${this.lastDiagnostics}\n${error instanceof Error ? error.message : String(error)}`, 12000); }
+  async closePane(paneId: string): Promise<boolean> {
+    if (paneId === this.env.HERDR_PANE_ID) {
+      this.lastDiagnostics = truncate(`${this.lastDiagnostics}\nRefusing to close caller pane ${paneId}.`, 12000);
+      return false;
+    }
+    try { await this.command(["pane", "close", paneId]); return true; }
+    catch (error) { this.lastDiagnostics = truncate(`${this.lastDiagnostics}\n${error instanceof Error ? error.message : String(error)}`, 12000); return false; }
   }
 }

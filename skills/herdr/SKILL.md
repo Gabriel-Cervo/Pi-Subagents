@@ -1,17 +1,21 @@
 ---
 name: herdr
-description: "Control Herdr, a terminal multiplexer for coding agents. Use only when the user explicitly mentions Herdr or asks to use Herdr to inspect or control panes, tabs, workspaces, commands, or another agent. Do not use merely because a task could benefit from a background terminal, delegation, or parallel work. Requires HERDR_ENV=1."
+description: "Control Herdr, a terminal multiplexer for coding agents. Use only when the user explicitly mentions Herdr or asks to use Herdr to inspect or control panes, tabs, workspaces, commands, or another agent. Do not use merely because a task could benefit from a background terminal, delegation, or parallel work. Requires HERDR_ENV=1, HERDR_WORKSPACE_ID, and HERDR_PANE_ID."
 ---
 
 # Herdr
 
 Herdr organizes terminals into workspaces, tabs, and panes, recognizes coding agents running inside panes, and exposes the current session through the `herdr` CLI.
 
-Before issuing any control command, verify that this agent is running inside a Herdr-managed pane:
+Before issuing any control command, verify that this agent is running inside a Herdr-managed pane and has a caller pane ID:
 
 ```bash
 test "${HERDR_ENV:-}" = 1
+test -n "${HERDR_WORKSPACE_ID:-}"
+test -n "${HERDR_PANE_ID:-}"
 ```
+
+`HERDR_WORKSPACE_ID` identifies the current workspace and `HERDR_PANE_ID` identifies the calling pane. Commands that use `--current` must have both available so a newly split pane can be distinguished from its parent safely.
 
 If the check fails, say that you are not running inside Herdr and stop. Do not inspect or control the focused Herdr session from outside Herdr.
 
@@ -95,7 +99,7 @@ herdr pane list --workspace "$HERDR_WORKSPACE_ID"
 herdr agent list
 ```
 
-Creation responses expose the IDs to use next. `workspace create` returns `.result.workspace`, `.result.tab`, and `.result.root_pane`. `tab create` returns `.result.tab` and `.result.root_pane`. `pane split` returns the new pane as `.result.pane`.
+Creation responses expose the IDs to use next. `workspace create` returns `.result.workspace`, `.result.tab`, and `.result.root_pane`. `tab create` returns `.result.tab` and `.result.root_pane`. `pane split` returns the new sibling pane as `.result.pane`; parse its `.pane_id` rather than deriving an ID.
 
 ## Start and coordinate an agent
 
@@ -217,6 +221,8 @@ herdr agent explain <target>
 - Use `--no-focus` for background work unless the user asked to switch context.
 - Use `--current`, an explicit pane ID, or a unique agent name. Do not rely on another client's focused pane.
 - Parse IDs from JSON responses. Do not derive them from sidebar order or examples.
+- Split background work into an unfocused sibling pane in the caller's current tab; do not create a per-run tab unless the user explicitly asks for one.
+- Close only the pane returned by your own `pane split`. Never close the caller's parent pane or its parent tab.
 - Do not close workspaces, tabs, panes, or sessions you did not create unless the user explicitly asked.
 - Never run `herdr server stop` from an active session unless the user explicitly intends to stop the server and its pane processes.
 - Never kill the main Herdr process. Use named test sessions for experiments that need an isolated server.

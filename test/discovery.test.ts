@@ -5,14 +5,14 @@ import path from "node:path";
 import { discoverAgents } from "../src/discovery.ts";
 
 test("definitions parse Herdr kind and string args", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "pi-subagents-")); await mkdir(path.join(root, ".pi", "agents"), { recursive: true });
+  const root = await mkdtemp(path.join(os.tmpdir(), "herdr-subagents-")); await mkdir(path.join(root, ".pi", "agents"), { recursive: true });
   await writeFile(path.join(root, ".pi", "agents", "reviewer.md"), `---\ndescription: Review\nkind: claude\nargs:\n  - --dangerously-skip-permissions\n  - --verbose\n---\nReview files`);
   const reviewer = discoverAgents(root, true, new Set()).agents.find((item) => item.name === "reviewer");
   expect(reviewer).toMatchObject({ kind: "claude", args: ["--dangerously-skip-permissions", "--verbose"] });
 });
 
 test("project definitions override defaults and parse supported frontmatter", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "pi-subagents-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "herdr-subagents-"));
   await mkdir(path.join(root, ".pi", "agents"), { recursive: true });
   await writeFile(path.join(root, ".pi", "agents", "implementer.md"), `---\ndescription: Local implementer\ndisplay_name: Local\ntools: read, bash\nenabled: false\n---\nLocal prompt`);
   const found = discoverAgents(root, true, new Set());
@@ -21,14 +21,14 @@ test("project definitions override defaults and parse supported frontmatter", as
 });
 
 test("legacy fields warn once", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "pi-subagents-")); await mkdir(path.join(root, ".pi", "agents"), { recursive: true });
+  const root = await mkdtemp(path.join(os.tmpdir(), "herdr-subagents-")); await mkdir(path.join(root, ".pi", "agents"), { recursive: true });
   await writeFile(path.join(root, ".pi", "agents", "legacy.md"), `---\ndescription: old\ncolor: red\n---\nold`);
   const seen = new Set<string>(); const first = discoverAgents(root, true, seen); const second = discoverAgents(root, true, seen);
   expect(first.warnings.some((warning) => warning.includes("color"))).toBe(true); expect(second.warnings).toEqual([]);
 });
 
 test("lookups are case-insensitive and collisions warn deterministically", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "pi-subagents-")); await mkdir(path.join(root, ".pi", "agents"), { recursive: true });
+  const root = await mkdtemp(path.join(os.tmpdir(), "herdr-subagents-")); await mkdir(path.join(root, ".pi", "agents"), { recursive: true });
   await writeFile(path.join(root, ".pi", "agents", "a.md"), `---\nname: REVIEWER\ndescription: first\n---\nfirst`);
   await writeFile(path.join(root, ".pi", "agents", "b.md"), `---\nname: reviewer\ndescription: second\n---\nsecond`);
   const found = discoverAgents(root, true, new Set());

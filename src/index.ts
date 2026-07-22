@@ -349,7 +349,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     });
   }
 
-  pi.registerCommand("agents", { description: "Inspect and configure Pi subagents", handler: async (_args, ctx) => {
+  pi.registerCommand("agents", { description: "Inspect and configure Herdr subagents", handler: async (_args, ctx) => {
     const active = manager; if (!active) return;
     try {
       if (!active.herdrAvailable()) ctx.ui.notify(`Herdr unavailable: ${active.herdrUnavailableMessage()}`, "warning");

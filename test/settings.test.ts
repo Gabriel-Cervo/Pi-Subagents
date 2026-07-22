@@ -5,7 +5,7 @@ import path from "node:path";
 import { loadSettings } from "../src/settings.ts";
 
 test("migrates v1 turn settings to v2 timeout settings", async () => {
-  const home = await mkdtemp(path.join(os.tmpdir(), "pi-subagents-"));
+  const home = await mkdtemp(path.join(os.tmpdir(), "herdr-subagents-"));
   const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-project-"));
   await mkdir(path.join(cwd, ".pi"), { recursive: true });
   await writeFile(path.join(home, "subagents.json"), JSON.stringify({ version: 1, defaultMaxTurns: 4, graceTurns: 2, runTimeoutMs: 1200, maxConcurrent: 2 }));
@@ -16,7 +16,7 @@ test("migrates v1 turn settings to v2 timeout settings", async () => {
 });
 
 test("global then project merge preserves precedence and unknown keys", async () => {
-  const home = await mkdtemp(path.join(os.tmpdir(), "pi-subagents-"));
+  const home = await mkdtemp(path.join(os.tmpdir(), "herdr-subagents-"));
   const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-project-"));
   await mkdir(path.join(cwd, ".pi"), { recursive: true });
   await writeFile(path.join(home, "subagents.json"), JSON.stringify({ maxConcurrent: 2, unknown: { keep: true }, agentModels: { Explore: "a/b" } }));

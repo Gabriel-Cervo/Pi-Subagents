@@ -1,10 +1,10 @@
-# Pi Subagents
+# Herdr Subagents
 
-Pi Subagents delegates work to [Herdr](https://herdr.dev), keeping one isolated, unfocused Herdr tab per run in the parent workspace. It exposes `Agent`, `get_subagent_result`, `steer_subagent`, and `/agents`.
+Herdr Subagents delegates work to [Herdr](https://herdr.dev), keeping one unfocused sibling pane per run in the caller's current tab. It exposes `Agent`, `get_subagent_result`, `steer_subagent`, and `/agents`.
 
 ## Requirements
 
-The extension must run inside Herdr 0.7.5 (`HERDR_ENV=1` and `HERDR_WORKSPACE_ID`). Outside Herdr, the tools fail with a clear error and `/agents` reports Herdr as unavailable. There is no in-process or Pi fallback.
+The extension must run inside Herdr 0.7.5 (`HERDR_ENV=1`, `HERDR_WORKSPACE_ID`, and `HERDR_PANE_ID`). Runs use `herdr pane split --current --direction right --cwd <cwd> --no-focus`, so the caller keeps focus while each agent runs in a sibling pane in the current tab. Outside Herdr, or without `HERDR_PANE_ID`, the tools fail with a clear error and `/agents` reports Herdr as unavailable. There is no in-process or Pi fallback.
 
 ## Usage
 
@@ -17,11 +17,11 @@ The extension must run inside Herdr 0.7.5 (`HERDR_ENV=1` and `HERDR_WORKSPACE_ID
 }
 ```
 
-Use `get_subagent_result` with the returned `agent_id`, and `steer_subagent` to send a new prompt. `kind` optionally overrides the definition's Herdr kind for one call. `resume` retains the original run ID, opens a fresh tab, and prepends the previous result to the new prompt. `inherit_context` prepends readable, image-free parent Markdown capped at 50 KiB.
+Use `get_subagent_result` with the returned `agent_id`, and `steer_subagent` to send a new prompt. `kind` optionally overrides the definition's Herdr kind for one call. `resume` retains the original run ID, opens a fresh sibling pane in the current tab, and prepends the previous result to the new prompt. `inherit_context` prepends readable, image-free parent Markdown capped at 50 KiB. Foreground runs stream live Herdr terminal snapshots through Pi tool progress updates; background calls return immediately, so their original tool callback cannot receive later updates.
 
-Background runs retain FIFO scheduling and smart joins. Status metadata reports Herdr prompt count (`prompts`), not internal LLM turns. Results are delimited, read from the settled Herdr agent, capped at 50 KiB, and the owned tab is closed after success, failure, abort, or timeout. The default timeout is 1,800,000 ms; `runTimeoutMs: 0` disables it. On incomplete terminal output the agent is asked to write Markdown to a temporary path. Approval/question states are returned as `blocked`, notified to the parent, and left open for inspection or steering.
+Background runs retain FIFO scheduling and smart joins. Status metadata reports Herdr prompt count (`prompts`), not internal LLM turns. Results are delimited, read from the settled Herdr agent, capped at 50 KiB, and only the owned sibling pane is closed after success, failure, abort, or timeout; the caller's parent pane and tab are never closed. The default timeout is 1,800,000 ms; `runTimeoutMs: 0` disables it. On incomplete terminal output the agent is asked to write Markdown to a temporary path. Approval/question states are returned as `blocked`, notified to the parent, and left open for inspection or steering.
 
-Pi subagents run as long-lived interactive agents. Herdr submits work through `agent prompt` and observes completion through `agent wait`, so the extension deliberately does not start Pi with `--print`. Print mode exits when no startup prompt is supplied and would release the Herdr agent name before the task was submitted.
+Herdr subagents run as long-lived interactive agents. Herdr submits work through `agent prompt` and observes completion through `agent wait`, so the extension deliberately does not start Pi with `--print`. Print mode exits when no startup prompt is supplied and would release the Herdr agent name before the task was submitted.
 
 ## Agent definitions
 
