@@ -47,7 +47,7 @@ Project definitions remain subject to Pi project trust and one-time approval. `/
 
 ### Default agent catalog
 
-The extension includes a broad, focused catalog in [`src/builtins.ts`](src/builtins.ts). Definitions use the parent model by default. Read-only roles do not receive `edit` or `write`, while implementation roles receive the full built-in tool set.
+The extension includes a focused five-agent catalog in [`src/builtins.ts`](src/builtins.ts). Definitions use the parent model by default. Read-only roles do not receive `edit` or `write`, while implementation roles receive the full built-in tool set.
 
 | Agent | Best use |
 | --- | --- |
@@ -55,25 +55,7 @@ The extension includes a broad, focused catalog in [`src/builtins.ts`](src/built
 | `Explore` | Read-only repository reconnaissance |
 | `Plan` | Ordered plans for multi-file work |
 | `implementer` | Focused implementation and verification |
-| `debugger` | Reproducing failures and fixing root causes |
 | `reviewer` | Independent read-only code review |
-| `test-engineer` | Test design, implementation, and coverage gaps |
-| `refactorer` | Behavior-preserving structural changes |
-| `architect` | System boundaries and design trade-offs |
-| `frontend-engineer` | UI components, styling, and interaction states |
-| `ux-designer` | User flows, interface requirements, and acceptance criteria |
-| `backend-engineer` | Services, business logic, and integrations |
-| `api-designer` | API and event contract design |
-| `security-auditor` | Threat modeling and vulnerability review |
-| `performance-engineer` | Evidence-based latency, memory, and scale work |
-| `accessibility-auditor` | Keyboard, screen-reader, and inclusive UI audits |
-| `docs-writer` | README, guides, API docs, and runbooks |
-| `devops-engineer` | CI, deployment, packaging, and observability |
-| `data-engineer` | Schemas, queries, pipelines, and data quality |
-| `migration-engineer` | Version, schema, and compatibility migrations |
-| `release-engineer` | Release readiness, versioning, and rollback checks |
-| `researcher` | Evidence gathering about code and dependencies |
-| `product-analyst` | Requirements, edge cases, and acceptance criteria |
 
 Every built-in prompt tells the agent what to inspect first, what it may change, how to verify the work, and what to include in its final report. Choose a specialist for its named job, use `Explore` or `Plan` before uncertain work, and use `general-purpose` only when no specialist fits.
 

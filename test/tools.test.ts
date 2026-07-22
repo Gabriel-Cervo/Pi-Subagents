@@ -28,17 +28,18 @@ test("Pi agents stay interactive for Herdr prompt and wait", () => {
   expect(args).toContain("--system-prompt");
 });
 
-test("default catalog exposes distinct, prompted roles with least-privilege tools", () => {
+test("default catalog exposes five distinct, prompted roles with least-privilege tools", () => {
   const names = BUILTIN_AGENT_CATALOG.map((agent) => agent.name.toLocaleLowerCase());
+  expect(names).toEqual(["general-purpose", "explore", "plan", "implementer", "reviewer"]);
   expect(new Set(names).size).toBe(names.length);
-  expect(BUILTIN_AGENT_CATALOG.length).toBeGreaterThanOrEqual(20);
+  expect(BUILTIN_AGENT_CATALOG).toHaveLength(5);
   for (const agent of BUILTIN_AGENT_CATALOG) {
     expect(agent.category).toBeTruthy();
     expect(agent.prompt.length).toBeGreaterThan(40);
     expect(agent.dispatchGuidance.length).toBeGreaterThan(20);
   }
 
-  const readOnly = new Set(["explore", "plan", "reviewer", "architect", "ux-designer", "api-designer", "security-auditor", "performance-engineer", "accessibility-auditor", "researcher", "product-analyst"]);
+  const readOnly = new Set(["explore", "plan", "reviewer"]);
   for (const agent of defaultAgentDefinitions()) {
     if (readOnly.has(agent.name.toLocaleLowerCase())) {
       expect(agent.tools).not.toContain("edit");
